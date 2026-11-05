@@ -1,5 +1,5 @@
-steps/*
-!steps/*.bend
-*.c
-*.mjs
-/hello
+/*
+!/*.bend
+!/docs/
+!/AGENTS.md
+!/.gitignore

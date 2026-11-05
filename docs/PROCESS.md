@@ -1,8 +1,8 @@
 # Building Space Invaders in Bend: a learning log
 
 This log records a native Space Invaders game built in Bend 2 (`bend version`
-prints 2.0.39), one small step at a time. Each step is a program under
-`steps/` that you can build and run on its own. For each step the log covers
+prints 2.0.39), one small step at a time. Each step is a program named `stepNN_*.bend` in
+the repo root that you can build and run on its own. For each step the log covers
 the Bend ideas it needs, the code, what broke, and how it got fixed.
 
 It assumes you know some programming language but nothing about Bend. Every
@@ -297,7 +297,7 @@ The runtime performs it.
 - A `do IO<T>:` block runs several IO steps in order (see `bend guide`).
   Step 1 doesn't need one.
 
-## Step 1: hello window (`steps/01_hello.bend`)
+## Step 1: hello window (`step01_hello.bend`)
 
 Goal: open a 256 x 256 window filled with one color. Any key press changes
 the color. Escape or closing the window quits.
@@ -331,7 +331,7 @@ def main() -> IO(Unit):
 Build and run:
 
 ```sh
-cd steps && bend 01_hello.bend -o hello && ./hello
+bend step01_hello.bend -o hello && ./hello
 ```
 
 ### How a Bend app works
@@ -478,7 +478,7 @@ close by itself after about 2.3 years. In practice `tick` answering
   once. It checked fine, but I removed it so every `+` in the code means
   something.
 
-## Step 2: drawing rectangles (`steps/02_rects.bend`)
+## Step 2: drawing rectangles (`step02_rects.bend`)
 
 Goal: draw a list of colored rectangles, with one sliding across the
 screen, by building the `Image` quadtree from step 1. Every shape in the
@@ -486,7 +486,7 @@ game (ship, invaders, bullets, shields) will be a rectangle, so this is
 the renderer for the rest of the project.
 
 ```sh
-cd steps && bend 02_rects.bend -o rects && ./rects
+bend step02_rects.bend -o rects && ./rects
 ```
 
 A screenshot confirmed it: four rectangles, earlier ones in the list drawn
@@ -751,3 +751,245 @@ In order, as the checker reported them:
 5. While cleaning up unneeded `+` markers I removed the one on `s` in
    `touches` and got `s (consumed more than once)`. It's used twice, in
    `x + s` and `y + s`. Put it back.
+
+## Step 3: the player's ship and the first law (`step03_ship.bend`)
+
+Goal: a ship at the bottom of the screen that moves while ← or → is held
+and never leaves the screen. This step also adds the project's first law,
+a claim about the code that Bend proves.
+
+```sh
+bend step03_ship.bend -o ship && ./ship
+bend PROOF.bend          # must print ALL PROOFS CHECK
+```
+
+Status: the code checks, the law is proven, and a screenshot shows the
+ship and the ground line. I haven't seen the ship move yet. My attempt to
+send arrow keys from a script went to the wrong window (see "What broke"),
+so moving the ship by hand is still untested.
+
+### Files changed
+
+`LAWS.bend` can only import files sitting next to it, so the step files
+moved from `steps/` to the repo root and were renamed:
+
+- `steps/01_hello.bend` became `step01_hello.bend`
+- `steps/02_rects.bend` became `step02_rects.bend`
+- new: `render.bend`, `step03_ship.bend`, `LAWS.bend`, `PROOF.bend`
+
+### Modules
+
+The renderer from step 2 now lives in its own file, `render.bend`, with
+no `main`. Step 3 imports it:
+
+```python
+import ./render.bend as R
+```
+
+`R` is a local nickname. Everything defined in `render.bend` is reachable
+through it: functions (`R.draw(...)`), types (`List<R.Rect>`) and
+constructors (`R.Rect{0, 236, 256, 2, green()}`). Without the prefix,
+`Rect{...}` fails with `expected : a declared constructor (lib.Box
+declares lib.Box)` (checked, in a test where the module was called
+`lib`).
+
+Two rules about import paths, both found the hard way:
+
+- No directories. `import ./steps/step03_ship.bend` fails with
+  `expected : an import path of plain names (letters, digits, _ and -)`.
+- The name must start with a letter. `import ./03_ship.bend` fails with
+  the same message, and `import ./s03_ship.bend` works (checked).
+
+### The game state
+
+```python
+type Game is Data:
+  Game{x: U32, left: Bool, right: Bool}
+```
+
+`x` is the ship's left edge. `left` and `right` record whether those
+arrow keys are held down right now.
+
+Why remember held keys instead of moving on each key event? A `Key` event
+arrives once when a key goes down (`down` is `True{}`) and once when it
+comes up (`False{}`). Moving only on events would give one 2-pixel jump
+per press. Remembering "held" and moving every frame gives smooth
+movement. `tick` updates the flags from the events:
+
+```python
+case Con{Key{63234, down}, rest}:     # Left arrow, pressed or released
+  tick(rest, set_left(g, down))
+```
+
+and when the event list runs out, it moves the ship one frame:
+`Some{step(g)}`.
+
+#### Changing one field means building a new value
+
+Values in Bend never change. To "set" a field, `set_left` takes the game
+apart with `match` and builds a new `Game` with one field replaced:
+
+```python
+def set_left(g: Game, held: Bool) -> Game:
+  match g:
+    case Game{x, left, right}:
+      Game{x, held, right}
+```
+
+The old `left` is dropped, which the use-once rule allows.
+
+### Moving without wrapping around
+
+`U32` arithmetic wraps: `0 - 2` is `4294967294`, a huge number. A ship at
+x = 0 moving left would jump off the right side. So moving left first asks
+whether there's room:
+
+```python
+def go_left(held: Bool, +x: U32) -> U32:
+  match held:
+    case True{}:
+      left_by((speed() <= x : U32), x)   # room to move?
+    case False{}:
+      x
+```
+
+`left_by` subtracts if there's room and returns `0` if not. Moving right
+can go past the edge, so after moving, `clamp` pulls `x` back to at most
+`max_x() = 240`, which is 256 minus the 16-pixel ship width:
+
+```python
+def pick_x(fits: Bool, x: U32) -> U32:
+  match fits:
+    case True{}:
+      x
+    case False{}:
+      max_x()
+
+def clamp(+x: U32) -> U32:
+  pick_x((x <= max_x() : U32), x)
+
+def step(g: Game) -> Game:
+  match g:
+    case Game{x, +left, +right}:
+      Game{clamp(go_right(right, go_left(left, x))), left, right}
+```
+
+`left` and `right` are used twice in `step`, once to move and once kept in
+the new state, hence `+left` and `+right`.
+
+### Laws and proofs
+
+A law is a claim that must hold for every possible input. You write the
+claim, and Bend refuses the project until someone supplies a proof. By
+convention the claims live in `LAWS.bend`, written by the human, and the
+proofs in `PROOF.bend`. You approved this law's wording before I wrote it.
+
+`LAWS.bend`:
+
+```python
+import Base
+import ./step03_ship.bend as Ship
+
+law ship_on_screen:
+  for g: Ship.Game
+  {U32.is_le(Ship.Game.x(Ship.step(g)), Ship.max_x()) == True{} : Bool}
+```
+
+Reading it piece by piece:
+
+- `law ship_on_screen:` names the claim.
+- `for g: Ship.Game` means "for every possible game state `g`", including
+  states the game never reaches, such as `x = 4000000000`.
+- `{a == b : T}` is an equality claim: `a` and `b` are the same value of
+  type `T`. Here `a` is "after one frame, is the ship's x at most 240?"
+  and `b` is `True{}`.
+
+The left edge needs no law, because a `U32` can't be negative.
+
+A proof is a `def` whose return type is the claim. Bend has no special
+proof language. If the def type-checks, the claim holds. The simplest
+proof is `{==}`, which means "both sides compute to the same value". It
+works when Bend can just evaluate the claim, for example
+`{U32.is_le(240, 240) == True{} : Bool}`.
+
+`PROOF.bend` imports the laws and fills in the law with a def named
+`Laws.ship_on_screen`:
+
+```python
+def clamp_ok(-y: U32, b: Bool, e: {U32.is_le(y, Ship.max_x()) == b : Bool}) ->
+  {U32.is_le(Ship.pick_x(b, y), Ship.max_x()) == True{} : Bool}:
+  match b:
+    case True{}:
+      e
+    case False{}:
+      {==}
+
+def Laws.ship_on_screen(g):
+  match g:
+    case Ship.Game{x, left, right}:
+      clamp_ok(Ship.go_right(right, Ship.go_left(left, x)),
+        U32.is_le(Ship.go_right(right, Ship.go_left(left, x)), Ship.max_x()),
+        {==})
+```
+
+How the proof works:
+
+1. `Laws.ship_on_screen(g)` matches on `g`. Inside the case, Bend knows
+   `g` is `Game{x, left, right}`, so `step(g)` unfolds into
+   `Game{clamp(new_x), left, right}` and the claim becomes "is
+   `clamp(new_x)` at most 240?". (`new_x` is short here for
+   `go_right(right, go_left(left, x))`.)
+2. `clamp(new_x)` unfolds into `pick_x(is_le(new_x, 240), new_x)`. Bend
+   can't evaluate `is_le(new_x, 240)`, because `new_x` is unknown. That's
+   where `clamp_ok` comes in.
+3. `clamp_ok` takes the comparison result as a parameter `b`, plus `e`, a
+   proof that `b` really is that result. It then matches on `b`, which is
+   allowed because `b` is a parameter:
+   - If `b` is `True{}`, `pick_x` returns `y` unchanged, and the goal is
+     "`is_le(y, 240)` is `True{}`". That's exactly what `e` says now that
+     `b` is `True{}`, so `e` is the proof.
+   - If `b` is `False{}`, `pick_x` returns `240`, and the goal is
+     "`is_le(240, 240)` is `True{}`". Bend evaluates that, so `{==}` proves
+     it.
+4. The caller passes `b = is_le(new_x, 240)` and `e = {==}`, which proves
+   "this value equals itself".
+
+The `-y` is erased: the proof only mentions `y` in types, so the compiled
+program drops it.
+
+This trick of passing a computed `Bool` to a helper along with a proof of
+what it equals is how you reason about an `if` in Bend. It's the same move
+as `keep` and `solid_if` in step 2, plus a proof of what was decided.
+
+#### Checking that the proof means something
+
+A proof that passes on the first try deserves suspicion. I copied the
+files to `/tmp`, took `clamp` out of `step`, and ran `bend PROOF.bend`
+there. It failed, and the error shows the unclamped position the law
+caught:
+
+```
+- expected : {Cmp.is_le(U32.cmp(Ship.go_right(right, Ship.go_left(left, x)), 240)) == True{} : Bool}
+```
+
+So the law depends on `clamp`, as it should.
+
+`bend PROOF.bend --verdict` re-checks proofs with a second, smaller checker
+written in Lean. It needs a Lean 4 toolchain (`elan`), which isn't
+installed here, so I skipped it.
+
+### What broke
+
+1. `import ./steps/03_ship.bend` failed: no directories in import paths.
+   Moved the files to the repo root.
+2. `import ./03_ship.bend` failed: a module name must start with a letter.
+   Renamed the steps to `stepNN_*.bend`.
+3. Testing input with a script went wrong. I used `wtype` to send arrow
+   keys to the game window, after asking Hyprland to focus it. The focus
+   command used syntax this Hyprland config no longer accepts. It failed
+   silently, and the keys, plus one typed `a`, went to the window that had
+   focus, an editor. I stopped sending keys from scripts. Movement still
+   needs a manual test.
+
+The step 3 code and the proof both passed on the first check, so there are
+no checker errors to report this time.
