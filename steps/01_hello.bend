@@ -1,7 +1,7 @@
 import Base
 
 # A key press changes the color; Escape or closing the window quits.
-def next_color(+c: U32) -> U32:
+def next_color(c: U32) -> U32:
   ((c * 2654435761 : U32) .^. 16744512 : U32)
 
 def tick(events: List<Event>, color: U32) -> IO(Maybe<U32>):
