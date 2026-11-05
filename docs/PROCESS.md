@@ -477,3 +477,277 @@ close by itself after about 2.3 years. In practice `tick` answering
 - `next_color` first had `+c`, which wasn't needed because `c` is used
   once. It checked fine, but I removed it so every `+` in the code means
   something.
+
+## Step 2: drawing rectangles (`steps/02_rects.bend`)
+
+Goal: draw a list of colored rectangles, with one sliding across the
+screen, by building the `Image` quadtree from step 1. Every shape in the
+game (ship, invaders, bullets, shields) will be a rectangle, so this is
+the renderer for the rest of the project.
+
+```sh
+cd steps && bend 02_rects.bend -o rects && ./rects
+```
+
+A screenshot confirmed it: four rectangles, earlier ones in the list drawn
+on top, and the blue square moving right between two frames.
+
+### The idea: split until each square is one color
+
+Step 1 painted the whole window with one `Pix`. To draw shapes, start
+with the full 256 x 256 square and ask what it looks like:
+
+- If no rectangle touches it, it's all background: `Pix{background}`.
+- If the topmost rectangle touching it covers all of it, it's that
+  rectangle's color: `Pix{color}`.
+- Otherwise it's a mix. Split it into four 128 x 128 quarters, ask the
+  same question for each, and combine the four answers with `Qua`.
+
+The splitting stops at 1 x 1 pixels at the latest. Large empty or filled
+areas stop early, so a frame with a few rectangles builds a few thousand
+nodes instead of 65,536 pixels.
+
+One speed-up: each quarter only needs the rectangles that touch it. So
+before recursing, the program filters the list down for each quarter, and
+deeper levels check fewer rectangles.
+
+### New Bend ideas in this step
+
+#### Your own types
+
+```python
+type Rect is Data:
+  Rect{x: U32, y: U32, w: U32, h: U32, color: U32}
+
+type Look is Data:
+  Solid{color: U32}
+  Mixed{}
+```
+
+`Rect` is a struct: one constructor, five fields. `Rect{40, 40, 80, 60,
+16733525}` builds one, with fields in the order they're declared. `Look`
+is the answer to "what does this square look like": `Solid{color}` or
+`Mixed{}`. Both are `is Data`, so their values may be copied with `+`.
+
+To read a field, `match` on the value and name the fields in the pattern.
+`Rect.color` does just that:
+
+```python
+def Rect.color(r: Rect) -> U32:
+  match r:
+    case Rect{x, y, w, h, c}:
+      c
+```
+
+The unused `x`, `y`, `w` and `h` are fine, since the use-once rule allows
+zero uses.
+
+#### A constant is a function with no parameters
+
+```python
+def background() -> U32:
+  1052688
+```
+
+You use it as `background()`. (1052688 is `0x101010`, a near-black.)
+
+#### Lists: `[a, b]` and `<>`
+
+`[a, b, c]` is a list literal. `r <> rest` puts `r` in front of the list
+`rest`, the same as `Con{r, rest}`.
+
+#### `Bool` logic
+
+`&&` (and) and `||` (or) work on `Bool` values without a `: T`
+annotation. Comparisons need one: `(x < (rx + w : U32) : U32)` reads "x is
+less than rx + w, comparing as `U32`".
+
+#### Definition order matters
+
+A `def` can only call `def`s written above it. I first had `Rect.color`
+below `classify`, which calls it, and got a confusing error:
+
+```
+- expected : a filled definition (an unfilled law is a dead claim: live code cannot use it)
+- observed : Rect.color
+```
+
+Moving `Rect.color` above `classify` fixed it. This is why the file reads
+bottom-up: small helpers first, `main` last.
+
+#### `match` only works on parameters and fields
+
+This is the rule that shapes the code the most. Both of these are
+rejected (checked):
+
+```python
+match pos(x):      # a computed value
+```
+
+```
+- message  : a parameter or field scrutinee (a match cannot scrutinize a computed value: give it its own def)
+```
+
+```python
+b = pos(x)
+match b:           # a local variable
+```
+
+```
+- message  : a parameter or field scrutinee (a match cannot scrutinize a local binder: give it its own def)
+```
+
+The fix the message suggests: write a small helper whose parameter is the
+value, and match on that parameter. That's what `keep` and `solid_if` are.
+They're Bend's `if`:
+
+```python
+def keep(hit: Bool, r: Rect, rest: +List<Rect>) -> +List<Rect>:
+  match hit:
+    case True{}:
+      r <> rest
+    case False{}:
+      rest
+```
+
+`keep(touches(r, x, y, s), r, ...)` reads "if `r` touches the square, put
+it in front of the rest, otherwise leave it out".
+
+#### Copyable lists: `+List<Rect>` versus `+rs`
+
+`paint` hands the same rectangle list to four quarters, so the list must be
+copyable. That takes `+` in two places, with two meanings:
+
+- In a type, `+List<Rect>` means "a list whose values may be copied". A
+  plain `List<Rect>` is a use-once list, even though `Rect` is `Data`.
+- On a variable, `+rs` means "I will use `rs` more than once". This only
+  works when the type allows copies.
+
+So the signature is `def paint(..., +rs: +List<Rect>, ...)`.
+
+Having a copyable type isn't enough on its own. A field pulled out by
+`match` needs its own `+` when used twice. In `touching`, `r` goes both to
+`touches` and into the result, and `case Con{r, rest}:` failed with
+`r (consumed more than once)`. The fix is `case Con{+r, rest}:`.
+
+The same goes for numbers from a `Nat` match. `paint` recurses four times
+with `p`, so it needs `case 1n+(+p):`. With plain `1n+p` the error is
+`p (consumed more than once)`.
+
+#### Local variables
+
+Inside a body, `name = value` binds a local variable, and `+name = value`
+binds one you can use several times:
+
+```python
++h = (s / 2 : U32)
++xr = (x + h : U32)
+```
+
+The body's last line is still the result.
+
+#### Nested `match`
+
+A `case` body can contain another `match`. `paint` first matches on the
+depth `d`, then on `look`.
+
+#### Parallel calls
+
+```python
+a b c e = paint(p, x, y, h, tl, classify(tl, x, y, h))
+  paint(p, xr, y, h, tr, classify(tr, xr, y, h))
+  paint(p, x, yb, h, bl, classify(bl, x, yb, h))
+  paint(p, xr, yb, h, br, classify(br, xr, yb, h))
+Qua{a, b, c, e}
+```
+
+`a b c e = f(...) g(...) h(...) k(...)` runs the four calls in parallel
+and names their results `a`, `b`, `c` and `e`. It can continue on
+indented lines. Bend's pure, use-once values mean the four calls can't
+interfere with each other, so this is always safe. According to the guide,
+the native build spreads them over CPU cores, and they run best when they
+do similar amounts of work, which four quarters of a screen usually do. I
+haven't measured the speed-up.
+
+#### No mutual recursion, so one recursive function
+
+The natural design is two functions: `paint` decides what a square looks
+like, and `split` paints four quarters by calling `paint`. Bend doesn't
+allow two functions that call each other, because it couldn't prove they
+finish. So all recursion lives in one function, `paint`.
+
+That ran into the `match` rule. `paint` needs to branch on "what does this
+square look like", which is a computed value. The way out is to make the
+caller compute it and pass it in as the parameter `look`:
+
+```python
+def paint(d: Nat, +x: U32, +y: U32, +s: U32, +rs: +List<Rect>, look: Look) ->
+  Image:
+```
+
+Each recursive call works out `classify(...)` for its quarter and passes
+it along. `paint` then matches on `look`, which is a parameter.
+
+#### Termination with several parameters
+
+`paint` recurses on `p`, which is smaller than `d`. Bend reads the
+arguments of a recursive call left to right. Each one must be unchanged
+until it reaches one that got smaller, and after that the rest may be
+anything. Here `d` is first and gets smaller (`p`), so `x`, `y`, `s`, `rs`
+and `look` are free to change. That's why the shrinking parameter goes
+first.
+
+#### Passing a `def` with `+` parameters to `App`
+
+`view` uses its state `t` twice, so it's `def view(+t: U32)`. Passing it
+directly as `~App{view, tick}` failed:
+
+```
+- expected : @_:U32 -> Sigma<&1, &1, U32, _ => Image>
+- observed : @+t:U32 -> Sigma<&1, &1, U32, _ => Image>
+```
+
+The `+` is part of the function's type. `App` expects a function that takes
+a use-once `U32`, and `view` asks for a copyable one, so the types differ.
+(`Sigma<...>` is how the checker spells a pair type.) Wrapping it in a
+lambda, `~App{+t => view(t), tick}`, works. That's the same `+s => ...`
+form step 1 used.
+
+### Reading the program
+
+- `touches(r, x, y, s)`: does rectangle `r` overlap the `s` x `s` square
+  at `(x, y)`? Two ranges overlap when each starts before the other ends.
+- `covers(r, x, y, s)`: does `r` contain the whole square?
+- `touching(rs, x, y, s)`: the rectangles in `rs` that touch the square,
+  in order. It's a hand-written filter. `Base` has `List.filter`, but its
+  test function is a `~` template, so the test can't use the local `x`,
+  `y` and `s`.
+- `classify(rs, x, y, s)`: given only touching rectangles, is the square
+  `Solid` or `Mixed`? With none, it's background. If the first (topmost)
+  one covers the square, it's that color. Otherwise it's mixed.
+- `paint(d, x, y, s, rs, look)`: the image of the square of side `s = 2^d`.
+  A `Solid` square becomes a `Pix`, and a `Mixed` square splits into four.
+  At `d = 0` (one pixel), a `Mixed` square can't happen, since a
+  rectangle touching a single pixel covers it, but `match` must handle
+  every case, so it paints background.
+- `scene(t)`: the rectangles for frame `t`. The blue one sits at
+  `x = t % 256`, so it slides right and wraps around.
+- `view(t)`: builds the scene and paints the full 256 x 256 square, depth
+  `8n` because 2^8 = 256.
+- `tick`: the same as step 1, except the state is now a frame counter that
+  goes up by one each frame.
+
+### What broke
+
+In order, as the checker reported them:
+
+1. `r (consumed more than once)` in `touching` and `classify`. Fixed with
+   `case Con{+r, rest}:`.
+2. `expected : a filled definition ...` for `Rect.color`. It was below its
+   caller. Moved it up.
+3. `p (consumed more than once)` in `paint`. Fixed with `case 1n+(+p):`.
+4. `view` didn't fit `App`'s `view` field because of `+t`. Wrapped it in
+   `+t => view(t)`.
+5. While cleaning up unneeded `+` markers I removed the one on `s` in
+   `touches` and got `s (consumed more than once)`. It's used twice, in
+   `x + s` and `y + s`. Put it back.
