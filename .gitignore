@@ -1,0 +1,4 @@
+steps/*
+!steps/*.bend
+*.c
+*.mjs
