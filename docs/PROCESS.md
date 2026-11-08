@@ -5,6 +5,14 @@ prints 2.0.39), one small step at a time. Each step is a program named `stepNN_*
 the repo root that you can build and run on its own. For each step the log covers
 the Bend ideas it needs, the code, what broke, and how it got fixed.
 
+To play the finished game:
+
+```sh
+bend step07_score.bend -o invaders && ./invaders
+# ← → move, Space fires, R restarts, Escape quits
+bend PROOF.bend   # checks every law in LAWS.bend
+```
+
 It assumes you know some programming language but nothing about Bend. Every
 Bend idea gets explained the first time it shows up. Small examples marked
 "checked" were run through `bend` 2.0.39, and the error messages quoted are
@@ -1566,3 +1574,141 @@ def Laws.score_never_drops(g):
    Made it a normal parameter.
 5. My first broken test copy used `Nat.pred`, which doesn't exist
    (`expected : a defined name`). `Nat.sub` does.
+
+## Step 7: score on screen and restart (`step07_score.bend`, `font.bend`)
+
+Goal: show the score, and let R start a new game. This finishes the game
+loop: play, win or lose, restart.
+
+```sh
+bend step07_score.bend -o invaders && ./invaders
+bend PROOF.bend
+```
+
+Status: everything checks, all five laws are proven, and a screenshot of a
+scratch copy, started with the score set to 1234567890, shows all ten
+digits drawn correctly. I didn't test pressing R (no scripted keys); the
+law below covers what restarting does.
+
+### A font made of rectangles
+
+The renderer only draws rectangles, so the font does too. Each digit is a
+grid of 3 x 5 cells, and each lit cell is a 2 x 2 rectangle. A glyph is
+stored as a 15-bit number, read row by row from the top-left:
+
+```
+0 = 111     1 = 010
+    101         110
+    101         010
+    101         010
+    111         111
+
+0 = 111101101101111 in binary = 31599
+```
+
+`glyphs()` is the list of all ten. `glyph(code)` picks one by character
+code: `'0'` is 48, so the digit is `code - 48`. `List.get` returns a
+`Maybe`, `None{}` when the index is past the end, so `or_blank` turns that
+into an empty glyph. A character that isn't a digit wraps around to a huge
+index and draws as a blank.
+
+`cells(15n, g, x, y, color, rest)` counts down through the 15 bits. For bit
+`p` it computes the cell's index `i = 14 - p`, then its column `i % 3` and
+row `i / 3`. If the bit is set, it adds a rectangle there:
+
+```python
+put(U32.is_eq(((g >> p : U32) .&. 1 : U32), 1), R.Rect{...}, cells(p, ...))
+```
+
+- `(g >> p : U32)` shifts `g` right by `p`. The shift amount is a `Nat`,
+  which is handy, because `p` is already the `Nat` loop counter.
+- `.&. 1` keeps the lowest bit.
+- `U32.is_eq(a, b)` tests equality. `==` only exists inside law types,
+  never as an operator in code.
+
+`text(s, x, y, color, rest)` walks a `String`. A string is a list of
+characters, `SCon{head, tail}` or `SNil{}`, and each character is
+`Chr{code}`. So `case SCon{Chr{code}, tail}:` opens the first character
+and its code in one pattern. Each character goes 8 pixels right of the
+one before.
+
+The score is a `Nat`, and `Nat.show` turns it into a `String`.
+
+### Where the score goes
+
+The plan was the top-left corner, but the screenshots show that the
+desktop's top bar overlaps the top of this window. Text at y = 10 was
+hidden, and so is step 6's win/lose bar at y = 0..6. So the score sits
+under the ground line at y = 242. It also takes over the bar's job: it's
+white while playing, green after a win and red after a loss.
+
+### Restart
+
+```python
+def restart(g: G.Game) -> G.Game:
+  G.Game.new()
+```
+
+Pressing R (key code 114, a lowercase `r`) replaces the game with a new
+one. The old game `g` is never used, which the use-once rule allows. R
+works in any phase, mid-game too.
+
+Step 7 doesn't define a new `Game` type. It reuses step 6's and only adds
+drawing and the R key, so its `tick` calls step 6's `G.step`, `G.fire` and
+the rest.
+
+### The fifth law
+
+```python
+law restart_starts_over:
+  for g: G.Game
+  {Top.restart(g) == G.Game.new() : G.Game}
+```
+
+"Whatever state the game was in, R gives exactly the starting game", so no
+score, position or invader carries over.
+
+The proof is one line:
+
+```python
+def Laws.restart_starts_over(g):
+  {==}
+```
+
+Both sides compute to the same value, because `restart` ignores `g`. A
+law this easy can still catch bugs, because it rules out future edits. To
+check, a scratch copy made `restart` keep the old score, and the proof
+failed. The error printed the whole computed game, all 40 invaders
+included, next to the unequal `Top.restart(g)`.
+
+(`Top` is the alias for `step07_score.bend`, because `S` was already
+taken by step 4.)
+
+### What broke
+
+1. The top bar hid the score (above). Moved it to the bottom.
+2. My first version of the broken test copy wasn't valid code: it matched
+   on `G.Game.new()`, a computed value. The step 2 rule still applies when
+   writing deliberate bugs. The second version built the game directly.
+
+## Where the project stands
+
+Five laws, all proven by `bend PROOF.bend`:
+
+| Law                    | Says                                              |
+|------------------------|---------------------------------------------------|
+| `ship_on_screen`       | after any frame, the whole ship is on screen      |
+| `bullets_on_screen`    | after any frame, every bullet left is on screen   |
+| `fleet_on_screen`      | after any frame, the invader block is on screen   |
+| `score_never_drops`    | after any frame, the score is the old one plus d ≥ 0 |
+| `restart_starts_over`  | R gives exactly the starting game                 |
+
+Known simplifications, possible next steps:
+
+- Shields, invaders shooting back, and lives.
+- The fleet keeps its full width at the edges even after outer columns
+  are shot.
+- The lose check uses the lowest alive invader, but the fleet moves at a
+  fixed one pixel per frame. The arcade game speeds up as invaders die.
+- `bend PROOF.bend --verdict` (the Lean-checked second opinion) needs a
+  Lean toolchain: `elan default stable`.

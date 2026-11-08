@@ -6,6 +6,7 @@ import ./bullets.bend as B
 import ./fleet.bend as F
 import ./hits.bend as H
 import ./step06_hits.bend as G
+import ./step07_score.bend as Top
 
 # clamp(y) is pick_x(is_le(y, max_x), y). b stands for that is_le result,
 # and e remembers what it was. If it was True, pick_x gives y back and e is
@@ -101,3 +102,7 @@ def Laws.score_never_drops(g):
           (0n, {==})
         case G.Lost{}:
           (0n, {==})
+
+# restart ignores the old game, so both sides compute to the same game.
+def Laws.restart_starts_over(g):
+  {==}

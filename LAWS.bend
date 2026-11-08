@@ -4,6 +4,7 @@ import ./bullets.bend as B
 import ./fleet.bend as F
 import ./hits.bend as H
 import ./step06_hits.bend as G
+import ./step07_score.bend as Top
 
 # Laws are the human's spec; PROOF.bend proves each one.
 
@@ -32,3 +33,9 @@ law score_never_drops:
   for g: G.Game
   exs d: Nat
   {G.Game.score(G.step(g)) == Nat.add(d, G.Game.score(g)) : Nat}
+
+# Pressing R gives a brand-new game, whatever the old game's state was:
+# nothing (score, position, invaders) carries over.
+law restart_starts_over:
+  for g: G.Game
+  {Top.restart(g) == G.Game.new() : G.Game}
