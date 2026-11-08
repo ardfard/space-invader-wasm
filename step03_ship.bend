@@ -106,3 +106,4 @@ def tick(events: List<Event>, g: Game) -> IO(Maybe<Game>):
 def main() -> IO(Unit):
   App.run(~Game, ~App{+g => view(g), tick}, "Step 3: ship", 256, 256,
     Game{120, False{}, False{}})
+

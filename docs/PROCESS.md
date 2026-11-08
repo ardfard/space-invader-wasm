@@ -993,3 +993,224 @@ installed here, so I skipped it.
 
 The step 3 code and the proof both passed on the first check, so there are
 no checker errors to report this time.
+
+## Step 4: shooting (`step04_shoot.bend`, `bullets.bend`)
+
+Goal: Space fires a bullet from the ship's nose. Bullets fly up and are
+removed when they leave the screen. Like the arcade game, only one bullet
+can be in flight at a time.
+
+```sh
+bend step04_shoot.bend -o shoot && ./shoot   # ← → move, Space fires
+bend PROOF.bend
+```
+
+Status: everything checks, both laws are proven, and the game opens and
+draws. I didn't press keys from a script this time (see step 3), so I
+tested the bullet logic by evaluating it directly instead. The next
+section shows how.
+
+### Building on earlier steps: a struct inside a struct
+
+Step 4 doesn't copy the ship code. It imports step 3 and puts step 3's
+whole state inside its own:
+
+```python
+import ./step03_ship.bend as Ship
+import ./bullets.bend as B
+
+type Game is Data:
+  Game{ship: Ship.Game, bullets: +List<B.Bullet>}
+```
+
+A field can hold any type, including another struct. To change the ship,
+step 4 takes `Game` apart and hands the ship to step 3's functions:
+
+```python
+def set_left(g: Game, held: Bool) -> Game:
+  match g:
+    case Game{s, bs}:
+      Game{Ship.set_left(s, held), bs}
+```
+
+So the ship law from step 3 still covers the ship in step 4, because step
+4 moves it with the same `Ship.step`.
+
+Why `+List<B.Bullet>` in the field? `Game` is declared `is Data`
+(copyable), so every field must be copyable too. A plain `List<B.Bullet>`
+is a use-once list (see step 2), and `+List<...>` makes it copyable.
+
+### The bullets module
+
+```python
+type Bullet is Data:
+  Bullet{x: U32, y: U32}
+
+def up(b: Bullet) -> Bullet:
+  match b:
+    case Bullet{x, y}:
+      Bullet{x, (y - speed() : U32)}
+
+def on_screen(b: Bullet) -> Bool:
+  match b:
+    case Bullet{x, y}:
+      (y < 256 : U32)
+```
+
+This uses `U32` wrap-around on purpose. A bullet at `y = 2` moving up by 4
+gets `y = 4294967294`, which fails `y < 256`. So "flew off the top" and
+"is off screen" are the same test, and there's no special case for the
+top edge.
+
+`move` moves every bullet and drops the ones that left. It's a map and a
+filter in one pass:
+
+```python
+def place(+b: Bullet, rest: +List<Bullet>) -> +List<Bullet>:
+  keep(on_screen(b), b, rest)
+
+def move(bs: +List<Bullet>) -> +List<Bullet>:
+  match bs:
+    case Nil{}:
+      Nil{}
+    case Con{b, rest}:
+      place(up(b), move(rest))
+```
+
+`place` exists so the moved bullet `up(b)` gets a name. It's needed twice,
+once for the test and once to keep it, and a parameter can be marked `+`
+where a computed value can't.
+
+### Patterns inside patterns
+
+```python
+case Con{B.Bullet{x, y}, more}:
+  R.Rect{x, y, 2, 6, white()} <> bullet_rects(more, rest)
+```
+
+One pattern opens the list cell and the bullet inside it at the same time.
+Constructors from another module keep their prefix in patterns too:
+`B.Bullet{x, y}`.
+
+### Testing without a window: a `main` that returns a value
+
+From the guide: when `main` returns a plain value instead of `IO`, `bend
+file.bend` computes it and prints it. That makes a quick test bench. In a
+scratch copy I ran:
+
+```python
+def main() -> Pair(+List<B.Bullet>, +List<B.Bullet>):
+  (S.Game.bullets(S.step(S.fire(S.fire(S.Game{Ship.Game{120, False{}, False{}}, []})))),
+   B.move([B.Bullet{10, 2}, B.Bullet{20, 100}]))
+```
+
+and got
+
+```
+([bullets.Bullet{127, 204}], [bullets.Bullet{20, 96}])
+```
+
+- Firing twice gave one bullet, so the one-at-a-time rule works. It starts
+  at the ship's nose, x = 120 + 7, y = 208, and one frame later it's at
+  y = 204.
+- The bullet at y = 2 was removed, and the one at y = 100 moved to 96.
+
+(`S.Game.bullets` is a field reader I added only in the scratch copy.)
+
+### The second law
+
+`LAWS.bend` gets a new claim:
+
+```python
+law bullets_on_screen:
+  for bs: +List<B.Bullet>
+  {B.all_on_screen(B.move(bs)) == True{} : Bool}
+```
+
+"For every list of bullets, after one frame, every bullet left is on
+screen." `all_on_screen` is a plain function that checks each bullet with
+`on_screen` and combines the answers with `&&`.
+
+The proposal was "bullets only move upward, and a bullet that leaves the
+top is removed". This law states the second half. The first half would
+mean proving facts about `U32` subtraction, and a `U32` in Bend is 32
+individual bits (`bend base U32` shows `U32{data: Word(32n)}`), so that
+proof would be long. "Moves upward" is also just what `up` says, so a law
+restating it would prove little.
+
+### The proof: induction and rewriting
+
+```python
+def keep_ok(
+  -m: B.Bullet, -rest: +List<B.Bullet>,
+  h: {B.all_on_screen(rest) == True{} : Bool},
+  b: Bool, e: {B.on_screen(m) == b : Bool}
+) -> {B.all_on_screen(B.keep(b, m, rest)) == True{} : Bool}:
+  match b:
+    case True{}:
+      %Equal.sym(Bool, B.on_screen(m), True{}, e) :
+        {Bool.and(_, B.all_on_screen(rest)) == True{} : Bool}
+      h
+    case False{}:
+      h
+
+def Laws.bullets_on_screen(bs):
+  match bs:
+    case Nil{}:
+      {==}
+    case Con{b, rest}:
+      keep_ok(B.up(b), B.move(rest), Laws.bullets_on_screen(rest),
+        B.on_screen(B.up(b)), {==})
+```
+
+New ideas:
+
+**Proof by induction is recursion.** `Laws.bullets_on_screen` calls itself
+on `rest`. That call is a proof that the law holds for the shorter list,
+which is the "induction hypothesis" from math class. The empty list is the
+base case: `all_on_screen(move(Nil{}))` computes to `True{}`, so `{==}`.
+
+**A proof can take proofs as parameters.** `h` is a proof that the rest of
+the list is fine. `e` is a proof of what the `Bool` `b` equals, the same
+trick as `clamp_ok` in step 3.
+
+**Erased parameters (`-m`, `-rest`).** These only appear inside types, so
+`-` tells Bend to drop them from the compiled program.
+
+**Case `False{}`: the bullet was dropped.** `keep(False{}, m, rest)`
+computes to `rest`, so the goal is "`rest` is all on screen". That's `h`.
+
+**Case `True{}`: the bullet was kept.** `keep(True{}, m, rest)` computes to
+`m <> rest`, and `all_on_screen` of that computes to
+`Bool.and(on_screen(m), all_on_screen(rest))`. Bend can't compute
+`on_screen(m)` because `m` is unknown. But `e` says
+`on_screen(m) == True{}`, so the proof swaps that in. That's a rewrite:
+
+```python
+%proof : P
+next
+```
+
+- `proof` must prove an equality, `{a == b : T}`.
+- `P` is the current goal written out, with `_` where `b` appears.
+- After the line, the goal is `P` with `a` in place of `_`. `next`
+  proves that.
+
+We have `e : {on_screen(m) == True{}}`, but we want to replace
+`on_screen(m)` with `True{}`, the other direction. `Equal.sym` from `Base`
+flips an equality: `Equal.sym(Bool, on_screen(m), True{}, e)` proves
+`{True{} == on_screen(m)}`. Then `P` marks `on_screen(m)` with `_`, and the
+goal becomes `Bool.and(True{}, all_on_screen(rest)) == True{}`.
+`Bool.and(True{}, x)` computes to `x` (`bend base Bool.and`), so what's
+left is `all_on_screen(rest) == True{}`, which is `h`.
+
+**Checking the proof can fail.** As in step 3, I broke the code in a
+scratch copy, making `place` keep every bullet, and `bend PROOF.bend`
+failed in `Laws.bullets_on_screen`. The proof does depend on bullets being
+removed.
+
+### What broke
+
+Nothing this time. The code, the law and the proof all checked on the
+first run. The rules from steps 2 and 3 (`+` on reused fields, helpers to
+`match` on computed values, defs above their callers) were enough.
