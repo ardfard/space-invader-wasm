@@ -5,6 +5,7 @@ import ./fleet.bend as F
 import ./hits.bend as H
 import ./step06_hits.bend as G
 import ./step07_score.bend as Top
+import ./step08_lives.bend as L
 
 # Laws are the human's spec; PROOF.bend proves each one.
 
@@ -39,3 +40,10 @@ law score_never_drops:
 law restart_starts_over:
   for g: G.Game
   {Top.restart(g) == G.Game.new() : G.Game}
+
+# Lives never go up: after any frame, the old lives are the new lives
+# plus some natural number d.
+law lives_never_go_up:
+  for g: L.Game
+  exs d: Nat
+  {L.Game.lives(g) == Nat.add(d, L.Game.lives(L.step(g))) : Nat}

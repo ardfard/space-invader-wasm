@@ -8,7 +8,7 @@ the Bend ideas it needs, the code, what broke, and how it got fixed.
 To play the finished game:
 
 ```sh
-bend step07_score.bend -o invaders && ./invaders
+bend step08_lives.bend -o invaders && ./invaders
 # ← → move, Space fires, R restarts, Escape quits
 bend PROOF.bend   # checks every law in LAWS.bend
 ```
@@ -1691,9 +1691,164 @@ taken by step 4.)
    on `G.Game.new()`, a computed value. The step 2 rule still applies when
    writing deliberate bugs. The second version built the game directly.
 
+## Step 8: invaders shoot back, lives (`step08_lives.bend`)
+
+Goal: invaders drop shots. A shot that hits the ship costs a life. You
+start with 3, shown bottom-right, and the game is lost at 0. R restarts
+with 3 lives.
+
+```sh
+bend step08_lives.bend -o invaders && ./invaders
+bend PROOF.bend
+```
+
+Status: everything checks, all six laws are proven. A screenshot shows the
+shots falling and the lives counter at 2 after a few seconds of standing
+still. Evaluating the game directly gave the expected results (below).
+
+### Randomness in a pure language
+
+`tick` could ask the runtime for random numbers through IO, but `step`
+is pure, and keeping it pure keeps it provable. So "random" comes from
+the frame counter `t`, scrambled:
+
+```python
+def pick(t: U32) -> U32:
+  (((t * 2654435761 : U32) >> 16n : U32) .&. 63 : U32)
+```
+
+Multiplying by a large odd number and keeping some middle bits gives a
+number from 0 to 63 that jumps around from one call to the next. Every 32
+frames, invader number `pick(t)` in the alive list fires. If fewer
+invaders are alive than that number, `List.get` returns `None{}` and
+nobody fires. So the fewer invaders are left, the less often they shoot.
+I didn't plan that, but it's a reasonable rule. The same frames always
+give the same shots, so a game is replayable, which also makes testing
+easy.
+
+### Wrapping step 6 again
+
+```python
+type Game is Data:
+  Game{core: G.Game, shots: +List<Shot>, lives: Nat, clock: U32}
+```
+
+Step 8 wraps step 6's game, like each earlier step did. To end the game
+at 0 lives, `lose(g)` rebuilds step 6's game with its phase set to
+`G.Lost{}`. That freezes it and turns the score red, both of which step 6
+and step 7 already handle.
+
+### One `step` with no match on computed values
+
+```python
+def step(g: Game) -> Game:
+  match g:
+    case Game{+core, ss, lives, +t}:
+      +next = G.step(core)
+      +fallen = move_shots(spawn(t, next, ss))
+      +sx = ship_x(next)
+      +left = lose_if(playing(core) && any_hit(fallen, sx), lives)
+      Game{end_if(is_out(left), next), drop_hits(fallen, sx), left,
+        (t + 1 : U32)}
+```
+
+Every new field is a plain expression built from the old fields. Nothing
+here matches on a computed value; helpers like `ship_x` and `playing` do
+their matching on their own parameters. This shape was deliberate. It
+makes the proof below short, because Bend can unfold `L.Game.lives(step(g))`
+straight to `lose_if(<hit>, lives)` with no lemma for each stage.
+
+`lose_if(hit, lives)` takes one life when hit, and never goes below 0:
+
+```python
+def lose_if(hit: Bool, lives: Nat) -> Nat:
+  match hit:
+    case True{}:
+      match lives:
+        case 0n:
+          0n
+        case 1n+p:
+          p
+    case False{}:
+      lives
+```
+
+`case 1n+p:` with result `p` is how you subtract one from a `Nat`.
+
+### Checking by evaluation
+
+Running the game with the ship standing still (a value `main` in a
+scratch copy, `run(n, g)` steps `n` frames, and each result is lives,
+phase, shots in flight):
+
+| Frames | Start lives | Result                  |
+|--------|-------------|-------------------------|
+| 100    | 3           | `3n, Playing{}, 2n`     |
+| 400    | 3           | `2n, Playing{}, 2n`     |
+| 1500   | 3           | `1n, Playing{}, 0n`     |
+| 400    | 1           | `0n, Lost{}, 2n`        |
+
+The last row shows that losing the last life ends the game. Evaluating
+1500 frames this way took about 50 seconds. The checker's evaluator is
+slow next to the compiled program, which runs 60 frames a second.
+
+### The sixth law: lives never go up
+
+```python
+law lives_never_go_up:
+  for g: L.Game
+  exs d: Nat
+  {L.Game.lives(g) == Nat.add(d, L.Game.lives(L.step(g))) : Nat}
+```
+
+The same shape as the score law, turned around: the old lives are the new
+lives plus some `d`.
+
+```python
+def lose_if_ok(hit: Bool, lives: Nat) ->
+  &d: Nat -> {lives == Nat.add(d, L.lose_if(hit, lives)) : Nat}:
+  match hit:
+    case True{}:
+      match lives:
+        case 0n:
+          (0n, {==})
+        case 1n+p:
+          (1n, {==})
+    case False{}:
+      (0n, {==})
+
+def Laws.lives_never_go_up(g):
+  match g:
+    case L.Game{+core, ss, lives, +t}:
+      lose_if_ok(
+        L.playing(core) && L.any_hit(L.move_shots(L.spawn(t, G.step(core), ss)),
+          L.ship_x(G.step(core))),
+        lives)
+```
+
+- `lose_if_ok` covers each case of `lose_if`. Hit with `1n+p` lives
+  leaves `p`, and `Nat.add(1n, p)` computes to `1n+p`, so `d = 1n`.
+  Otherwise nothing changes and `d = 0n`.
+- The main proof hands `lose_if_ok` the exact hit expression from `step`.
+  Bend infers nothing, so the expression has to be written out again.
+  Since `step` uses `core` three times in it, the pattern needs `+core`.
+
+Breaking it in a scratch copy, so that getting hit at 0 lives gave a life
+back, made the proof fail (`expected : 0n`, `observed : 1n`).
+
+### What broke
+
+1. My first `tick` used a template helper,
+   `def on_core(g: Game, ~f: G.Game -> G.Game)`, to apply a step 6
+   function to the inner game. Two rules from step 1 rejected it: `~`
+   parameters must come first (`only leading binders take ~`), and the
+   lambda I passed, `c => G.set_left(c, down)`, mentions the local `down`,
+   which template arguments can't. Plain wrappers (`fire`, `set_left`,
+   `set_right`) fixed it.
+
 ## Where the project stands
 
-Five laws, all proven by `bend PROOF.bend`:
+Six laws, all proven by `bend PROOF.bend`:
 
 | Law                    | Says                                              |
 |------------------------|---------------------------------------------------|
@@ -1702,10 +1857,11 @@ Five laws, all proven by `bend PROOF.bend`:
 | `fleet_on_screen`      | after any frame, the invader block is on screen   |
 | `score_never_drops`    | after any frame, the score is the old one plus d ≥ 0 |
 | `restart_starts_over`  | R gives exactly the starting game                 |
+| `lives_never_go_up`    | after any frame, the old lives are the new ones plus d ≥ 0 |
 
 Known simplifications, possible next steps:
 
-- Shields, invaders shooting back, and lives.
+- Shields.
 - The fleet keeps its full width at the edges even after outer columns
   are shot.
 - The lose check uses the lowest alive invader, but the fleet moves at a

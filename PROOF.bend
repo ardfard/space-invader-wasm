@@ -7,6 +7,7 @@ import ./fleet.bend as F
 import ./hits.bend as H
 import ./step06_hits.bend as G
 import ./step07_score.bend as Top
+import ./step08_lives.bend as L
 
 # clamp(y) is pick_x(is_le(y, max_x), y). b stands for that is_le result,
 # and e remembers what it was. If it was True, pick_x gives y back and e is
@@ -106,3 +107,26 @@ def Laws.score_never_drops(g):
 # restart ignores the old game, so both sides compute to the same game.
 def Laws.restart_starts_over(g):
   {==}
+
+# lose_if takes away one life or none, so d is 1n or 0n.
+def lose_if_ok(hit: Bool, lives: Nat) ->
+  &d: Nat -> {lives == Nat.add(d, L.lose_if(hit, lives)) : Nat}:
+  match hit:
+    case True{}:
+      match lives:
+        case 0n:
+          (0n, {==})
+        case 1n+p:
+          (1n, {==})
+    case False{}:
+      (0n, {==})
+
+# step's new lives are lose_if(hit, lives), where hit is the expression
+# step computes; it's spelled out here because Bend infers nothing.
+def Laws.lives_never_go_up(g):
+  match g:
+    case L.Game{+core, ss, lives, +t}:
+      lose_if_ok(
+        L.playing(core) && L.any_hit(L.move_shots(L.spawn(t, G.step(core), ss)),
+          L.ship_x(G.step(core))),
+        lives)
