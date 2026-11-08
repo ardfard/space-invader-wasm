@@ -1,6 +1,7 @@
 import Base
 import ./step03_ship.bend as Ship
 import ./bullets.bend as B
+import ./fleet.bend as F
 
 # Laws are the human's spec; PROOF.bend proves each one.
 
@@ -16,3 +17,9 @@ law ship_on_screen:
 law bullets_on_screen:
   for bs: +List<B.Bullet>
   {B.all_on_screen(B.move(bs)) == True{} : Bool}
+
+# After any frame, the invader fleet stays within the screen's left and
+# right edges: its left edge is at most 256 minus the block's width.
+law fleet_on_screen:
+  for f: F.Fleet
+  {U32.is_le(F.Fleet.x(F.step(f)), F.max_x()) == True{} : Bool}

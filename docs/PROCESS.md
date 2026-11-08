@@ -1214,3 +1214,163 @@ removed.
 Nothing this time. The code, the law and the proof all checked on the
 first run. The rules from steps 2 and 3 (`+` on reused fields, helpers to
 `match` on computed values, defs above their callers) were enough.
+
+## Step 5: the invader fleet (`step05_fleet.bend`, `fleet.bend`)
+
+Goal: a block of 5 rows x 8 invaders that marches sideways, one pixel per
+frame. When it reaches an edge, it drops 8 pixels and turns around.
+Bullets pass through invaders for now; step 6 adds hits.
+
+```sh
+bend step05_fleet.bend -o fleet && ./fleet
+bend PROOF.bend
+```
+
+Status: everything checks, all three laws are proven, and a screenshot
+shows the fleet over the ship. I checked the turning by evaluating the
+fleet directly (below).
+
+### The fleet is only a position
+
+The fleet doesn't store 40 invaders. It stores the block's top-left
+corner and its direction:
+
+```python
+type Fleet is Data:
+  Fleet{x: U32, y: U32, right: Bool}
+```
+
+Drawing works out each invader's position from the corner: column `c` is
+at `x + 20 * c`, row `r` at `y + 16 * r`. Step 6 will add which invaders
+are still alive.
+
+### Moving and turning
+
+```python
+def next_x(right: Bool, x: U32) -> U32:
+  match right:
+    case True{}:
+      (x + 1 : U32)
+    case False{}:
+      (x - 1 : U32)
+
+def go_or_turn(fits: Bool, nx: U32, y: U32, +right: Bool) -> Fleet:
+  match fits:
+    case True{}:
+      Fleet{nx, y, right}
+    case False{}:
+      Fleet{edge(right), (y + drop() : U32), Bool.not(right)}
+
+def advance(+nx: U32, y: U32, right: Bool) -> Fleet:
+  go_or_turn((nx <= max_x() : U32), nx, y, right)
+```
+
+This uses the wrap-around trick from step 4. Moving left from `x = 0`
+gives `4294967295`, which fails `nx <= 104` just like moving right past
+104 does. One test covers both edges. When the next position doesn't fit,
+the fleet goes to the edge it was heading for (`edge(right)` is 104 or
+0), drops, and turns around. `Bool.not` from `Base` flips a `Bool`.
+
+`max_x()` is 104 because the block is `7 * 20 + 12 = 152` pixels wide,
+and `256 - 152 = 104`.
+
+Checked by evaluating a value `main` in a scratch copy, with `run(n, f)`
+stepping the fleet `n` times:
+
+| Start                    | Frames | Result              |
+|--------------------------|--------|---------------------|
+| `Fleet{0, 24, True{}}`   | 104    | `Fleet{104, 24, True{}}`, at the right edge |
+| `Fleet{0, 24, True{}}`   | 105    | `Fleet{104, 32, False{}}`, dropped and turned |
+| `Fleet{0, 40, False{}}`  | 1      | `Fleet{0, 48, True{}}`, the left edge turns too |
+
+### Drawing a grid with two counting loops
+
+```python
+def row_rects(n: Nat, +x: U32, +y: U32, rest: +List<R.Rect>) -> +List<R.Rect>:
+  match n:
+    case 0n:
+      rest
+    case 1n+p:
+      R.Rect{x, y, F.inv_w(), F.inv_h(), purple()}
+        <> row_rects(p, (x + F.gap_x() : U32), y, rest)
+```
+
+This is a counting loop. `n` is a `Nat`, and `case 1n+p:` matches any
+number at least 1, naming the number one less `p`. So `row_rects(8n, ...)`
+runs 8 times, moving right by `gap_x()` each time. `grid_rects` does the
+same for rows, calling `row_rects` once per row.
+
+Both functions take `rest`, a list to put their rectangles in front of.
+That way the pieces chain together, fleet then bullets then ship, with no
+list appending.
+
+### Reusing step 4
+
+```python
+type Game is Data:
+  Game{play: S.Game, fleet: F.Fleet}
+```
+
+Same pattern as step 4: step 5's state wraps step 4's state and adds the
+fleet. Each handler opens `Game`, passes `play` to step 4's function, and
+leaves the fleet alone, or the other way round.
+
+### The third law
+
+```python
+law fleet_on_screen:
+  for f: F.Fleet
+  {U32.is_le(F.Fleet.x(F.step(f)), F.max_x()) == True{} : Bool}
+```
+
+"For every fleet, after one frame, the block's left edge is at most 104",
+so the whole block is on screen. The left side needs nothing, because a
+`U32` is never negative.
+
+The proof has the same shape as the ship's in step 3:
+
+```python
+def turn_ok(
+  -nx: U32, -y: U32,
+  b: Bool, e: {U32.is_le(nx, F.max_x()) == b : Bool}, right: Bool
+) -> {U32.is_le(F.Fleet.x(F.go_or_turn(b, nx, y, right)), F.max_x()) == True{} : Bool}:
+  match b:
+    case True{}:
+      e
+    case False{}:
+      match right:
+        case True{}:
+          {==}
+        case False{}:
+          {==}
+```
+
+- If `nx` fits, the fleet moves there, and `e` says it fits.
+- If it doesn't, the fleet goes to `edge(right)`. Bend can't compute that
+  while `right` is unknown, so the proof matches on `right` as well. Then
+  it's `is_le(104, 104)` or `is_le(0, 104)`, and both compute to `True{}`.
+
+Breaking the code in a scratch copy, by turning around at `nx` instead of
+at the edge, made the proof fail as expected.
+
+### What broke
+
+1. `expected : a declared constructor (step03_ship.Game declares
+   step03_ship.Game)` for `Ship.Game{...}`. Step 5 used the `Ship` alias
+   without importing step 3. An alias only exists in the file that
+   declares it, so importing step 4, which imports step 3, isn't enough.
+   Added `import ./step03_ship.bend as Ship`.
+2. In the proof, `match right:` inside the `False{}` case failed:
+
+   ```
+   'right' can't be matched in this position (it is matched after a local
+   statement or after a match on a later binder, ...)
+   ```
+
+   **Matches must follow parameter order.** `right` was declared before
+   `b`, so after matching `b`, Bend won't match `right`. Moving `right` to
+   the end of `turn_ok`'s parameters fixed it.
+3. Not a checker error, but worth knowing: my first evaluation of the
+   fleet ran in the scratch copy that I'd broken on purpose, and printed
+   `Fleet{105, ...}` and a wrapped `x`. Testing against the real files gave
+   the correct table above.

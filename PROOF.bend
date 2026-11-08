@@ -2,6 +2,7 @@ import Base
 import ./LAWS.bend as Laws
 import ./step03_ship.bend as Ship
 import ./bullets.bend as B
+import ./fleet.bend as F
 
 # clamp(y) is pick_x(is_le(y, max_x), y). b stands for that is_le result,
 # and e remembers what it was. If it was True, pick_x gives y back and e is
@@ -46,3 +47,25 @@ def Laws.bullets_on_screen(bs):
     case Con{b, rest}:
       keep_ok(B.up(b), B.move(rest), Laws.bullets_on_screen(rest),
         B.on_screen(B.up(b)), {==})
+
+# go_or_turn either moves to nx, when e says nx fits, or stops at an
+# edge, and both edges (0 and max_x) fit by computation.
+def turn_ok(
+  -nx: U32, -y: U32,
+  b: Bool, e: {U32.is_le(nx, F.max_x()) == b : Bool}, right: Bool
+) -> {U32.is_le(F.Fleet.x(F.go_or_turn(b, nx, y, right)), F.max_x()) == True{} : Bool}:
+  match b:
+    case True{}:
+      e
+    case False{}:
+      match right:
+        case True{}:
+          {==}
+        case False{}:
+          {==}
+
+def Laws.fleet_on_screen(f):
+  match f:
+    case F.Fleet{x, y, +right}:
+      turn_ok(F.next_x(right, x), y,
+        U32.is_le(F.next_x(right, x), F.max_x()), {==}, right)
