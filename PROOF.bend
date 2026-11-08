@@ -1,8 +1,11 @@
 import Base
 import ./LAWS.bend as Laws
 import ./step03_ship.bend as Ship
+import ./step04_shoot.bend as S
 import ./bullets.bend as B
 import ./fleet.bend as F
+import ./hits.bend as H
+import ./step06_hits.bend as G
 
 # clamp(y) is pick_x(is_le(y, max_x), y). b stands for that is_le result,
 # and e remembers what it was. If it was True, pick_x gives y back and e is
@@ -69,3 +72,32 @@ def Laws.fleet_on_screen(f):
     case F.Fleet{x, y, +right}:
       turn_ok(F.next_x(right, x), y,
         U32.is_le(F.next_x(right, x), F.max_x()), {==}, right)
+
+# settle adds the frame's points to the score, so d is those points.
+def settle_ok(
+  h: H.Hits, -s: Ship.Game, -fx: U32, -fy: U32, -right: Bool, -score: Nat
+) -> &d: Nat -> {G.Game.score(G.settle(h, s, fx, fy, right, score)) == Nat.add(d, score) : Nat}:
+  match h:
+    case H.Hits{points, bs, iv}:
+      (points, {==})
+
+def advance_ok(p: S.Game, f: F.Fleet, iv: +List<H.Inv>, -score: Nat) ->
+  &d: Nat -> {G.Game.score(G.advance(p, f, iv, score)) == Nat.add(d, score) : Nat}:
+  match p:
+    case S.Game{s, bs}:
+      match f:
+        case F.Fleet{+fx, +fy, right}:
+          settle_ok(H.hits(bs, iv, fx, fy), s, fx, fy, right, score)
+
+# While playing, d is the points scored this frame. Once won or lost the
+# game is frozen, so d is 0n, and Nat.add(0n, score) computes to score.
+def Laws.score_never_drops(g):
+  match g:
+    case G.Game{phase, p, f, iv, score}:
+      match phase:
+        case G.Playing{}:
+          advance_ok(S.step(p), F.step(f), iv, score)
+        case G.Won{}:
+          (0n, {==})
+        case G.Lost{}:
+          (0n, {==})

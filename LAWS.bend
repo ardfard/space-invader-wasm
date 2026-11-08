@@ -2,6 +2,8 @@ import Base
 import ./step03_ship.bend as Ship
 import ./bullets.bend as B
 import ./fleet.bend as F
+import ./hits.bend as H
+import ./step06_hits.bend as G
 
 # Laws are the human's spec; PROOF.bend proves each one.
 
@@ -23,3 +25,10 @@ law bullets_on_screen:
 law fleet_on_screen:
   for f: F.Fleet
   {U32.is_le(F.Fleet.x(F.step(f)), F.max_x()) == True{} : Bool}
+
+# The score never goes down: after any frame, the new score is the old
+# score plus some natural number d (and a Nat is never negative).
+law score_never_drops:
+  for g: G.Game
+  exs d: Nat
+  {G.Game.score(G.step(g)) == Nat.add(d, G.Game.score(g)) : Nat}

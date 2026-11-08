@@ -1374,3 +1374,195 @@ at the edge, made the proof fail as expected.
    fleet ran in the scratch copy that I'd broken on purpose, and printed
    `Fleet{105, ...}` and a wrapped `x`. Testing against the real files gave
    the correct table above.
+
+## Step 6: hits, score, win and lose (`step06_hits.bend`, `hits.bend`)
+
+Goal: a bullet that hits an invader destroys both and scores 10 points.
+Shooting every invader wins. An invader reaching the ship's row loses.
+Either way the game freezes, and a bar across the top turns green (won)
+or red (lost). The score can't be seen yet; step 7 adds text.
+
+```sh
+bend step06_hits.bend -o hits && ./hits
+bend PROOF.bend
+```
+
+Status: everything checks, all four laws are proven, the game draws, and
+evaluating the logic directly gave the expected results (below).
+
+### Which invaders are alive
+
+Step 5's fleet was only a corner position. Step 6 adds a list of the
+invaders still alive, each one by column and row:
+
+```python
+type Inv is Data:
+  Inv{c: U32, r: U32}
+```
+
+An invader's screen position is the fleet corner plus its column and row
+times the gaps. Killing an invader removes it from the list.
+`H.all_invaders()` builds the starting 40 with two counting loops, like
+the drawing in step 5. `U32.from_nat` turns the `Nat` counter into a
+`U32`.
+
+### Finding hits
+
+`strike(invs, b, fx, fy)` checks one bullet against every invader and
+returns a `Strike`: how many it hit, and the invaders left. It removes
+every invader the bullet overlaps. The gaps between invaders (8 pixels)
+are wider than a bullet (2 x 6), so that's at most one.
+
+`resolve` does that for every bullet and collects a `Hits`: points scored,
+bullets still flying, invaders still alive. A bullet that hit something
+scores 10 and disappears. One that didn't keeps flying.
+
+### A destructuring let is a `match` too
+
+The natural way to write `resolve` is:
+
+```python
+Strike{n, left} = strike(invs, b, fx, fy)
+settle(n, b, resolve(rest, left, fx, fy))
+```
+
+That fails:
+
+```
+- message  : a parameter or field scrutinee (a match cannot scrutinize a computed value: give it its own def)
+```
+
+`Strike{n, left} = ...` takes the value apart, which is a `match`, so the
+step 2 rule applies. A helper function won't work here either, because
+the helper would have to call `resolve` back, and Bend doesn't allow two
+functions that call each other.
+
+The fix is the one `paint` used in step 2: the caller computes the value
+and passes it in as a parameter. `resolve` takes the first bullet's strike
+as `s`, and each recursive call computes the strike for the next bullet:
+
+```python
+def resolve(bs: +List<B.Bullet>, s: Strike, +fx: U32, +fy: U32) -> Hits:
+  match bs:
+    case Nil{}:
+      match s:
+        case Strike{n, left}:
+          Hits{0n, Nil{}, left}
+    case Con{+b, +rest}:
+      match s:
+        case Strike{n, left}:
+          settle(n, b, resolve(rest, first_strike(rest, left, fx, fy), fx, fy))
+```
+
+This is a general pattern: **when a recursive function needs a computed
+value taken apart, make it a parameter and have each call compute the
+next one.**
+
+### Game phases
+
+```python
+type Phase is Data:
+  Playing{}
+  Won{}
+  Lost{}
+```
+
+A type whose constructors have no fields works as an enum. `step` matches
+on the phase and only moves things while `Playing{}`. After the hits are
+worked out, `pick_phase` decides the next phase: `Lost{}` if any invader
+is low enough, otherwise `Won{}` if none are left, otherwise `Playing{}`.
+
+`||` is "or" on `Bool`, like `&&` for "and".
+
+### Checking the logic
+
+A value `main` in a scratch copy printed:
+
+```
+((10n, 0n, 39n), (0n, 1n, 40n), 10n, step06_hits.Playing{}, 39n)
+```
+
+1. A bullet on invader (0,0) of a fleet at (0,24): 10 points, no bullets
+   left, 39 invaders left.
+2. A bullet at x = 15, in the gap between the first two columns: no
+   points, the bullet keeps flying, 40 invaders.
+3. Fire once from the start position and play 60 frames: score 10, still
+   playing, 39 invaders. The shot hit something.
+
+`List.length(&2, H.Inv, iv)` counts a list. The `&2` says the list holds
+copyable values, the same thing `+` means in `+List<...>`.
+
+### The fourth law: the score never goes down
+
+The score is a `Nat` rather than a `U32`. A `U32` score wraps around, so
+"never goes down" would be false: 4294967290 + 10 is 4.
+
+```python
+law score_never_drops:
+  for g: G.Game
+  exs d: Nat
+  {G.Game.score(G.step(g)) == Nat.add(d, G.Game.score(g)) : Nat}
+```
+
+New piece: **`exs d: Nat`** means "there exists a `d`". The law says: for
+every game, there's some natural number `d` such that the new score is the
+old score plus `d`. A `Nat` is never negative, so the score never drops.
+The proof has to supply `d`, which is called a witness, and returns it in
+a pair with the proof: `(d, proof)`.
+
+A helper proof that returns a witness writes its return type as
+`&d: Nat -> {...}`. That's a dependent pair: a `Nat` called `d`, and a
+proof whose claim mentions `d`.
+
+```python
+def settle_ok(
+  h: H.Hits, -s: Ship.Game, -fx: U32, -fy: U32, -right: Bool, -score: Nat
+) -> &d: Nat -> {G.Game.score(G.settle(h, s, fx, fy, right, score)) == Nat.add(d, score) : Nat}:
+  match h:
+    case H.Hits{points, bs, iv}:
+      (points, {==})
+
+def Laws.score_never_drops(g):
+  match g:
+    case G.Game{phase, p, f, iv, score}:
+      match phase:
+        case G.Playing{}:
+          advance_ok(S.step(p), F.step(f), iv, score)
+        case G.Won{}:
+          (0n, {==})
+        case G.Lost{}:
+          (0n, {==})
+```
+
+- **Won or lost:** the score is unchanged, so `d = 0n`. The claim is
+  `score == Nat.add(0n, score)`, and `Nat.add` computes `Nat.add(0n, b)`
+  to `b` (`bend base Nat.add`), so `{==}` works. That's why the game code
+  writes `Nat.add(points, score)` with the points first. Written the other
+  way round, `Nat.add(score, 0n)` doesn't compute when `score` is unknown,
+  and the proof would need an extra lemma like `add_zero` in the guide.
+- **Playing:** `d` is this frame's points. Those come from a `Hits` value
+  that Bend can't compute in general, so the same parameter trick
+  applies. `advance_ok` takes the ship and fleet as parameters and opens
+  them, then `settle_ok` takes the `Hits` as a parameter and opens it.
+  Once it's open, `points` is the witness, and the claim computes to
+  `Nat.add(points, score) == Nat.add(points, score)`.
+
+**Checking that the proof can fail:** in a scratch copy, a won game took
+1 point off (`Nat.sub(score, 1n)`), and the proof failed with
+`expected : Nat.sub(score, 1n)`, `observed : score`.
+
+### What broke
+
+1. The destructuring let in `resolve` (above). Fixed by passing the strike
+   in as a parameter.
+2. `p (consumed more than once)` in `row_of`. The column counter is used
+   for the column number and for the next call. Fixed with `1n+(+p)`.
+3. `PROOF.bend` used `S.Game{...}` without importing step 4:
+   `a declared constructor (unknown: S.Game)`. Same lesson as step 5:
+   every file imports what it names.
+4. `expected : -iv`, `observed : iv` in `advance_ok`. I'd marked `iv` as
+   erased, but it goes into `H.hits(...)`, which `settle_ok` opens with
+   `match` at run time. **An erased value can't feed anything that runs.**
+   Made it a normal parameter.
+5. My first broken test copy used `Nat.pred`, which doesn't exist
+   (`expected : a defined name`). `Nat.sub` does.
