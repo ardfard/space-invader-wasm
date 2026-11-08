@@ -6,6 +6,7 @@ import ./hits.bend as H
 import ./step06_hits.bend as G
 import ./step07_score.bend as Top
 import ./step08_lives.bend as L
+import ./shields.bend as Sh
 
 # Laws are the human's spec; PROOF.bend proves each one.
 
@@ -47,3 +48,12 @@ law lives_never_go_up:
   for g: L.Game
   exs d: Nat
   {L.Game.lives(g) == Nat.add(d, L.Game.lives(L.step(g))) : Nat}
+
+# Hits only remove shield blocks, never add any: after chipping, the
+# blocks left plus some natural number d is the number before.
+law shields_only_shrink:
+  for blocks: +List<Sh.Blk>
+  for +ps: +List<Sh.Box>
+  exs d: Nat
+  {Nat.add(List.length(&2, Sh.Blk, Sh.chip(blocks, ps)), d)
+    == List.length(&2, Sh.Blk, blocks) : Nat}

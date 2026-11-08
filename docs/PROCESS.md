@@ -8,7 +8,7 @@ the Bend ideas it needs, the code, what broke, and how it got fixed.
 To play the finished game:
 
 ```sh
-bend step08_lives.bend -o invaders && ./invaders
+bend step09_shields.bend -o invaders && ./invaders
 # ← → move, Space fires, R restarts, Escape quits
 bend PROOF.bend   # checks every law in LAWS.bend
 ```
@@ -1846,9 +1846,178 @@ back, made the proof fail (`expected : 0n`, `observed : 1n`).
    which template arguments can't. Plain wrappers (`fire`, `set_left`,
    `set_right`) fixed it.
 
+## Step 9: shields (`step09_shields.bend`, `shields.bend`)
+
+Goal: four arch-shaped shields above the ship. Any bullet or invader shot
+that touches a shield block destroys the block and itself, so the shields
+wear away from both sides.
+
+```sh
+bend step09_shields.bend -o invaders && ./invaders
+bend PROOF.bend
+```
+
+Status: everything checks, all seven laws are proven, evaluation gave the
+expected results, and a screenshot shows the shields chipped by invader
+shots after 8 seconds.
+
+### Shields are a list of blocks
+
+```python
+type Blk is Data:
+  Blk{x: U32, y: U32}
+```
+
+Each shield is 6 x 4 blocks of 4 x 4 pixels, minus the two middle blocks
+of the bottom row, which make the arch. So it's 22 blocks per shield, 88
+in all. `all_blocks()` builds them with the counting-loop pattern from
+step 5. `gap(c, r)` picks out the arch's opening, and `put` (Bend's `if`
+again) leaves those blocks out.
+
+### One frame of shield damage
+
+After step 8's frame, `settle` does three things with the same old block
+list:
+
+- `free_bullets` keeps the bullets that touch no block.
+- `free_shots` keeps the invader shots that touch no block.
+- `chip(blocks, boxes(bs, ss))` keeps the blocks that no bullet or shot
+  touches.
+
+`boxes` turns bullets and shots into one list of `Box{x, y, w, h}`, so
+`chip` doesn't care which kind of projectile hit. A bullet is 6 pixels
+tall and blocks are 4, so one hit can take out two blocks stacked on top
+of each other, which makes the shields wear down chunkily.
+
+`settle` takes step 8's whole game apart (`L.Game`, then `G.Game`, then
+`S.Game`) to get at the bullets and shots, and builds it again with the
+survivors. Deep, but each layer is the same `match` and rebuild as in
+every earlier step.
+
+Checked by evaluation (values in a scratch copy):
+
+| Test                                              | Result |
+|---------------------------------------------------|--------|
+| number of blocks                                  | 88     |
+| blocks after a 2 x 6 box at (21, 185)             | 86, two stacked blocks gone |
+| bullets at (21, 185) and (60, 185), after shields | 1, the one between shields |
+| lives and blocks after 1500 frames, standing still | 1 life, 74 blocks |
+
+### A termination detail
+
+```python
+case Nil{}:
+  match ss:
+    case Con{s, rest}:
+      shot_box(s) <> boxes(Nil{}, rest)
+```
+
+Here `boxes` calls itself with the first argument `Nil{}`, which is the
+same value it just matched, and the second argument shrinking. Bend
+accepted it. Passing an argument unchanged counts as "unchanged" even when
+it's written out again as `Nil{}`.
+
+### The seventh law: shields only shrink
+
+```python
+law shields_only_shrink:
+  for blocks: +List<Sh.Blk>
+  for +ps: +List<Sh.Box>
+  exs d: Nat
+  {Nat.add(List.length(&2, Sh.Blk, Sh.chip(blocks, ps)), d)
+    == List.length(&2, Sh.Blk, blocks) : Nat}
+```
+
+"For any blocks and any projectiles, the number of blocks after chipping,
+plus some `d`, equals the number before." So chipping never adds blocks.
+It's stated on `chip` itself, not on the whole game frame, because that's
+where blocks get removed.
+
+### The first lemma proven by induction
+
+This proof needs a fact about addition that Bend can't just compute:
+
+```python
+def add_succ(a: Nat, -b: Nat) -> {Nat.add(a, 1n+b) == 1n+Nat.add(a, b) : Nat}:
+  match a:
+    case 0n:
+      {==}
+    case 1n+p:
+      %add_succ(p, b) : {1n+Nat.add(p, 1n+b) == 1n+_ : Nat}
+      {==}
+```
+
+`a + (1 + b) = 1 + (a + b)`. `Nat.add` only takes its first argument
+apart, so when `a` is unknown, `Nat.add(a, 1n+b)` is stuck. The proof is by
+induction on `a`:
+
+- `a = 0n`: both sides compute to `1n+b`. `{==}`.
+- `a = 1n+p`: the left side computes to `1n+Nat.add(p, 1n+b)`, and the
+  right to `1n+1n+Nat.add(p, b)`. The recursive call `add_succ(p, b)` is
+  the induction hypothesis: `Nat.add(p, 1n+b) == 1n+Nat.add(p, b)`. The
+  rewrite replaces the right-hand `1n+Nat.add(p, b)` (marked `_`) with
+  `Nat.add(p, 1n+b)`, and then both sides match.
+
+This is the same shape as `add_zero` in `bend guide`.
+
+### The main proof
+
+Induction on the block list. For each block, `chip` either keeps it or
+drops it, and `chip_step` handles both:
+
+```python
+match keep:
+  case True{}:
+    (d, e) = ih
+    (d, %e : {1n+Nat.add(List.length(&2, Sh.Blk, Sh.chip(rest, ps)), d) == 1n+_ : Nat}
+      {==})
+  case False{}:
+    (d, e) = ih
+    (1n+d, drop_ok(Sh.chip(rest, ps), rest, d, e))
+```
+
+- `ih` is the law for the rest of the list: a witness `d` and a proof `e`
+  that `kept + d == rest`. `(d, e) = ih` takes the pair apart. That's
+  allowed, because `ih` is a parameter.
+- **Block kept:** both counts go up by one, so `d` stays the same. The
+  goal computes to `1 + (kept + d) == 1 + rest`, and rewriting with `e`
+  finishes it.
+- **Block dropped:** `kept` stays the same and `rest` goes up by one, so
+  the witness is `1n+d`. The goal is `kept + (1 + d) == 1 + rest`. That's
+  where `add_succ` comes in, inside `drop_ok`: first turn `kept + (1 + d)`
+  into `1 + (kept + d)`, then rewrite with `e`. Two rewrites in a row,
+  each on its own line.
+
+**`?goal` as a tool.** I wrote the dropped case as `(1n+d, ?goal)` first.
+Bend checked everything else and printed the remaining goal with every
+variable in scope, which showed exactly what `drop_ok` had to prove.
+
+**Checking that the proof can fail:** a scratch copy where `put` keeps two
+copies of each surviving block failed with `expected : {2n+Nat.add(...)`.
+
+### What broke
+
+1. In my first draft of `gap` I wrote `(c == 2 : U32)`. `==` only exists
+   in law types; code uses `U32.is_eq(c, 2)`. I caught it before
+   checking.
+2. **Erased values can't feed live code, and the rule spreads.** `drop_ok`
+   had `-kept`, but `kept` goes into `add_succ`'s first argument, which
+   `add_succ` matches on. So `kept` had to be live, then `rest` and `ps` in
+   `chip_step` too, since they build `kept`. Each fix revealed the next
+   error (`expected : -kept`, then `expected : -ps`).
+3. `ps (consumed more than once)` in the main proof. Adding `+` there
+   failed with a parse error. A def that fills a law takes its parameter
+   quantities from the law. So `LAWS.bend` says `for +ps`, which means the
+   same thing, since `ps` is a copyable list anyway.
+4. Not a checker error. A screenshot showed score 10 and a missing
+   invader, though the test never pressed a key. Evaluating the same 480
+   frames gave score 0. The new game window had taken keyboard focus, and
+   a real keypress meant for another window reached it. The game logic
+   was fine. Windowed tests should be short, or run while not typing.
+
 ## Where the project stands
 
-Six laws, all proven by `bend PROOF.bend`:
+Seven laws, all proven by `bend PROOF.bend`:
 
 | Law                    | Says                                              |
 |------------------------|---------------------------------------------------|
@@ -1858,10 +2027,10 @@ Six laws, all proven by `bend PROOF.bend`:
 | `score_never_drops`    | after any frame, the score is the old one plus d ≥ 0 |
 | `restart_starts_over`  | R gives exactly the starting game                 |
 | `lives_never_go_up`    | after any frame, the old lives are the new ones plus d ≥ 0 |
+| `shields_only_shrink`  | hits only remove shield blocks, never add any     |
 
 Known simplifications, possible next steps:
 
-- Shields.
 - The fleet keeps its full width at the edges even after outer columns
   are shot.
 - The lose check uses the lowest alive invader, but the fleet moves at a

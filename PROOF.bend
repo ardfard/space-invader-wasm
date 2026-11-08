@@ -8,6 +8,7 @@ import ./hits.bend as H
 import ./step06_hits.bend as G
 import ./step07_score.bend as Top
 import ./step08_lives.bend as L
+import ./shields.bend as Sh
 
 # clamp(y) is pick_x(is_le(y, max_x), y). b stands for that is_le result,
 # and e remembers what it was. If it was True, pick_x gives y back and e is
@@ -130,3 +131,51 @@ def Laws.lives_never_go_up(g):
         L.playing(core) && L.any_hit(L.move_shots(L.spawn(t, G.step(core), ss)),
           L.ship_x(G.step(core))),
         lives)
+
+# a + (1 + b) = 1 + (a + b). Nat.add only takes its first argument apart,
+# so this needs induction on a.
+def add_succ(a: Nat, -b: Nat) -> {Nat.add(a, 1n+b) == 1n+Nat.add(a, b) : Nat}:
+  match a:
+    case 0n:
+      {==}
+    case 1n+p:
+      %add_succ(p, b) : {1n+Nat.add(p, 1n+b) == 1n+_ : Nat}
+      {==}
+
+# The dropped-block case: if L + d = n, then L + (1 + d) = 1 + n.
+# First add_succ turns L + (1 + d) into 1 + (L + d), then e finishes.
+def drop_ok(
+  kept: +List<Sh.Blk>, -rest: +List<Sh.Blk>, -d: Nat,
+  e: {Nat.add(List.length(&2, Sh.Blk, kept), d) == List.length(&2, Sh.Blk, rest) : Nat}
+) -> {Nat.add(List.length(&2, Sh.Blk, kept), 1n+d) == 1n+List.length(&2, Sh.Blk, rest) : Nat}:
+  %Equal.sym(Nat, Nat.add(List.length(&2, Sh.Blk, kept), 1n+d),
+    1n+Nat.add(List.length(&2, Sh.Blk, kept), d),
+    add_succ(List.length(&2, Sh.Blk, kept), d)) :
+    {_ == 1n+List.length(&2, Sh.Blk, rest) : Nat}
+  %e : {1n+Nat.add(List.length(&2, Sh.Blk, kept), d) == 1n+_ : Nat}
+  {==}
+
+# One step of the induction. ih is the law for the rest of the list. If
+# the block is kept, d stays the same; if it is dropped, d grows by one.
+def chip_step(
+  keep: Bool, -b: Sh.Blk, rest: +List<Sh.Blk>, ps: +List<Sh.Box>,
+  ih: &d: Nat -> {Nat.add(List.length(&2, Sh.Blk, Sh.chip(rest, ps)), d)
+    == List.length(&2, Sh.Blk, rest) : Nat}
+) -> &d: Nat -> {Nat.add(List.length(&2, Sh.Blk, Sh.put(keep, b, Sh.chip(rest, ps))), d)
+    == 1n+List.length(&2, Sh.Blk, rest) : Nat}:
+  match keep:
+    case True{}:
+      (d, e) = ih
+      (d, %e : {1n+Nat.add(List.length(&2, Sh.Blk, Sh.chip(rest, ps)), d) == 1n+_ : Nat}
+        {==})
+    case False{}:
+      (d, e) = ih
+      (1n+d, drop_ok(Sh.chip(rest, ps), rest, d, e))
+
+def Laws.shields_only_shrink(blocks, ps):
+  match blocks:
+    case Nil{}:
+      (0n, {==})
+    case Con{+b, +rest}:
+      chip_step(Bool.not(Sh.hit_any(b, ps)), b, rest, ps,
+        Laws.shields_only_shrink(rest, ps))
