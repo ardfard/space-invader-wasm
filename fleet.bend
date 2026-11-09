@@ -71,3 +71,11 @@ def step(f: Fleet) -> Fleet:
   match f:
     case Fleet{x, y, +right}:
       advance(next_x(right, x), y, right)
+
+# n steps in a row. A faster fleet takes more than one step per frame.
+def march(n: Nat, f: Fleet) -> Fleet:
+  match n:
+    case 0n:
+      f
+    case 1n+p:
+      step(march(p, f))

@@ -8,7 +8,7 @@ the Bend ideas it needs, the code, what broke, and how it got fixed.
 To play the finished game:
 
 ```sh
-bend step09_shields.bend -o invaders && ./invaders
+bend step10_speed.bend -o invaders && ./invaders
 # ← → move, Space fires, R restarts, Escape quits
 bend PROOF.bend   # checks every law in LAWS.bend
 ```
@@ -2015,9 +2015,142 @@ copies of each surviving block failed with `expected : {2n+Nat.add(...)`.
    a real keypress meant for another window reached it. The game logic
    was fine. Windowed tests should be short, or run while not typing.
 
+## Step 10: the fleet speeds up (`step10_speed.bend`)
+
+Goal: the fewer invaders are left, the faster the fleet marches. With all
+40 alive it moves 1 pixel per frame, as before. It gets one extra step per
+frame at 20 or fewer, another at 8 or fewer, and another at 2 or fewer, so
+the last invaders move 4 pixels per frame.
+
+```sh
+bend step10_speed.bend -o invaders && ./invaders
+bend PROOF.bend
+```
+
+Status: everything checks, all eight laws are proven, and evaluation
+gave the expected speeds. I didn't take a screenshot, because nothing
+new is drawn and new game windows steal keyboard focus (see step 9).
+
+### More steps, not bigger steps
+
+The fleet already knows how to take one step and turn at an edge. So
+instead of teaching it bigger steps, a faster fleet just takes several
+steps in one frame. `march` in `fleet.bend` repeats `step` n times:
+
+```python
+def march(n: Nat, f: Fleet) -> Fleet:
+  match n:
+    case 0n:
+      f
+    case 1n+p:
+      step(march(p, f))
+```
+
+This is the counting pattern from step 2: a `Nat` is either `0n` or
+`1n+p`, and each call works on the smaller `p`, so Bend can see it ends.
+
+### How many extra steps
+
+`extra` turns the number of invaders left into a `Nat` of extra steps.
+Bend has no `if`, so each threshold is a `Bool` passed to a small helper
+that matches on it:
+
+```python
+def faster(fast: Bool, n: Nat) -> Nat:
+  match fast:
+    case True{}:
+      1n+n
+    case False{}:
+      n
+
+def extra(+left: U32) -> Nat:
+  faster((left <= 20 : U32),
+    faster((left <= 8 : U32), faster((left <= 2 : U32), 0n)))
+```
+
+`left` is used three times, so it is marked reusable with `+`.
+
+### Wrapping without a new type
+
+Step 7 used step 6's `Game` type directly instead of wrapping it, because
+it only added drawing and a key. Step 10 does the same with step 9's
+`W.Game`. Its `step` runs step 9's frame, then `speed_up` opens the nested
+game, gives the fleet its extra steps, and puts everything back:
+
+```python
+def step(g: W.Game) -> W.Game:
+  speed_up(W.step(g))
+```
+
+`hurry` only adds steps while the phase is `Playing{}`, so a won or lost
+game stays frozen, as in step 6.
+
+### Checking by evaluation
+
+A value-returning `main` in a scratch copy printed:
+
+```
+([0n, 1n, 2n, 3n], [40, 10, 40])
+```
+
+The first list is `extra` for 40, 20, 8 and 2 invaders. The second is the
+invader count of a new game, then the fleet's x after 10 frames: 10 with a
+full fleet, and 40 with only one invader left.
+
+### The eighth law: a fast fleet stays on screen
+
+```python
+law fast_fleet_on_screen:
+  for n: Nat
+  for f: F.Fleet
+  {U32.is_le(F.Fleet.x(F.march(1n+n, f)), F.max_x()) == True{} : Bool}
+```
+
+In plain words: however many steps the fleet takes in one frame, as long
+as it is at least one, it ends on screen.
+
+Why "at least one"? `f` is any fleet at all, including one that starts
+off screen, such as x = 200. `march(0n, f)` is `f` itself, so with zero
+steps the law would be false. Every real frame takes at least one step,
+so `1n+n` is the honest statement.
+
+### A proof that uses another law
+
+Every law proven in `PROOF.bend` is also a function, and a proof can call
+it. `Laws.fleet_on_screen(g)` returns a proof that `g`'s next step is on
+screen, for any fleet `g`. `march(1n+n, f)` computes to
+`step(march(n, f))`, which is one step of the fleet `march(n, f)`. So the
+whole proof is one call:
+
+```python
+def Laws.fast_fleet_on_screen(n, f):
+  Laws.fleet_on_screen(F.march(n, f))
+```
+
+No induction is needed. Where `march(n, f)` ended up doesn't matter,
+because the last step alone puts the fleet back on screen.
+
+**Checking that the proof can fail:** in a scratch copy where the law says
+`F.march(n, f)` (zero steps allowed), Bend reported:
+
+```
+- expected : {Cmp.is_le(U32.cmp(F.Fleet.x(F.march(n, f)), 104)) == True{} : Bool}
+- observed : {Cmp.is_le(U32.cmp(F.Fleet.x(F.step(F.march(n, f))), 104)) == True{} : Bool}
+```
+
+The proof shows the version with a last `step`, and the law no longer asks
+for one.
+
+### What broke
+
+1. My first test `main` returned `List<U32>` and wrapped `extra` in
+   `Nat.to_u32`, which doesn't exist: `expected : a defined name`,
+   `observed : Nat.to_u32`. Returning a pair of a `List<Nat>`
+   and a `List<U32>` printed both without converting.
+
 ## Where the project stands
 
-Seven laws, all proven by `bend PROOF.bend`:
+Eight laws, all proven by `bend PROOF.bend`:
 
 | Law                    | Says                                              |
 |------------------------|---------------------------------------------------|
@@ -2028,12 +2161,11 @@ Seven laws, all proven by `bend PROOF.bend`:
 | `restart_starts_over`  | R gives exactly the starting game                 |
 | `lives_never_go_up`    | after any frame, the old lives are the new ones plus d ≥ 0 |
 | `shields_only_shrink`  | hits only remove shield blocks, never add any     |
+| `fast_fleet_on_screen` | however many steps the fleet takes in a frame, it stays on screen |
 
 Known simplifications, possible next steps:
 
 - The fleet keeps its full width at the edges even after outer columns
   are shot.
-- The lose check uses the lowest alive invader, but the fleet moves at a
-  fixed one pixel per frame. The arcade game speeds up as invaders die.
 - `bend PROOF.bend --verdict` (the Lean-checked second opinion) needs a
   Lean toolchain: `elan default stable`.

@@ -179,3 +179,8 @@ def Laws.shields_only_shrink(blocks, ps):
     case Con{+b, +rest}:
       chip_step(Bool.not(Sh.hit_any(b, ps)), b, rest, ps,
         Laws.shields_only_shrink(rest, ps))
+
+# march(1+n, f) is step(march(n, f)): one last step of a fleet that is
+# anywhere, which is exactly what fleet_on_screen covers.
+def Laws.fast_fleet_on_screen(n, f):
+  Laws.fleet_on_screen(F.march(n, f))

@@ -57,3 +57,10 @@ law shields_only_shrink:
   exs d: Nat
   {Nat.add(List.length(&2, Sh.Blk, Sh.chip(blocks, ps)), d)
     == List.length(&2, Sh.Blk, blocks) : Nat}
+
+# A faster fleet still stays on screen: however many steps it takes in
+# one frame (at least one), it ends within the left and right edges.
+law fast_fleet_on_screen:
+  for n: Nat
+  for f: F.Fleet
+  {U32.is_le(F.Fleet.x(F.march(1n+n, f)), F.max_x()) == True{} : Bool}
