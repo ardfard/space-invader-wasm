@@ -2148,9 +2148,161 @@ for one.
    `observed : Nat.to_u32`. Returning a pair of a `List<Nat>`
    and a `List<U32>` printed both without converting.
 
+## Step 11: the fleet uses its real width (`fleet.bend`, `hits.bend`)
+
+Goal: once the outer columns are shot, the fleet should march all the way
+to the screen edge with the columns that are left. Before this step it
+turned around as if all 8 columns were still alive, leaving an empty gap
+at the edge.
+
+There is no new step file. The change goes into step 6's `step`, so
+every game from step 6 on uses it, including `step10_speed.bend`.
+
+```sh
+bend step10_speed.bend -o invaders && ./invaders
+bend PROOF.bend
+```
+
+Status: everything checks, all nine laws are proven, and evaluation shows
+the fleet turning at the new edges.
+
+### The alive block
+
+The fleet's `x` is still the left edge of column 0, even when column 0 is
+dead, so drawing and hits work exactly as before. What changes is the
+edge test. If `lo` and `hi` are the leftmost and rightmost columns still
+alive (as `U32`s), then:
+
+- the alive block's left edge on screen is `x + lo * 20`;
+- its width is `(hi - lo) * 20 + 12`, so its left edge may go up to
+  `244 - (hi - lo) * 20`, which `fleet.bend` calls `room`.
+
+```python
+def fits(x: U32, +lo: U32, +hi: U32) -> Bool:
+  U32.is_le(left_edge(x, lo), room(lo, hi))
+```
+
+With all columns alive (`lo = 0`, `hi = 7`) this is the old test,
+`x <= 104`. The U32 wrap-around trick from step 3 still covers the left
+side: with `lo = 1` the fleet's `x` may go down to -20, and the left edge
+`x + 20` is then 0. One more step left makes it wrap to a huge number,
+which fails the test.
+
+`x` itself wraps to a huge number at -20 (it prints as `4294967276`).
+That is fine, because U32 addition wraps back: an invader in column 1 is
+drawn at `x + 20`, which is 0.
+
+`hits.bend` finds `lo` and `hi` by walking the list of alive invaders and
+keeping the smallest and largest column seen so far.
+
+### Turning without snapping to the edge
+
+The old `go_or_turn` moved a fleet that didn't fit to the exact edge
+(`max_x` or 0). The new `turn_in` keeps the fleet where it was, then drops
+and turns:
+
+```python
+def turn_in(ok: Bool, nx: U32, x: U32, y: U32, +right: Bool) -> Fleet:
+  match ok:
+    case True{}:
+      Fleet{nx, y, right}
+    case False{}:
+      Fleet{x, (y + drop() : U32), Bool.not(right)}
+```
+
+In the game this looks the same, since the fleet moves 1 pixel at a time:
+the last step that fit already put it at the edge. The reason for the
+change is the proof, explained next.
+
+### Why the law has an assumption
+
+The edge is now `room(lo, hi)` for unknown `lo` and `hi`. Snapping to it
+would make the proof show that `(room - lo * 20) + lo * 20` is at most
+`room`. For actual numbers Bend computes that, but for unknown `U32`s it
+can't: it has no algebra rules for `U32`, and it only checks by computing.
+I saw that limit in step 10's failed check, where the goal stayed as
+`U32.add(nx, U32.mul(lo, 20))` with nothing left to compute.
+
+Staying in place avoids the arithmetic, but then the law needs to know
+the fleet was on screen to begin with. A law can state that as an
+**assumption**: a `for` line whose type is an equality. The proof gets it
+as one more parameter, here `h`, which proves the assumption holds.
+
+```python
+law alive_fleet_on_screen:
+  for n: Nat
+  for +lo: U32
+  for +hi: U32
+  for +f: F.Fleet
+  for h: {F.fits(F.Fleet.x(f), lo, hi) == True{} : Bool}
+  {F.fits(F.Fleet.x(F.march_alive(n, lo, hi, f)), lo, hi) == True{} : Bool}
+```
+
+In plain words: if the alive invaders are on screen, they are still on
+screen after any number of steps, so this one law also covers step 10's
+extra steps.
+
+The assumption always holds in the game. A new game has `x = 0`, `lo = 0`,
+`hi = 7`, and `0 <= 104`. When an outer column dies, the left edge and
+`room` grow by the same amount, so the test still passes. That last
+argument is mine and not checked by Bend. It is the weak spot of this
+step.
+
+### The proof
+
+`turn_in_ok` is the usual pattern of a Bool plus a proof of where it came
+from. If the next position fits, `e` says so. If not, the fleet stays at
+`x`, and `h` says `x` fits:
+
+```python
+  match b:
+    case True{}:
+      e
+    case False{}:
+      h
+```
+
+`step_alive_ok` opens the fleet and calls `turn_in_ok`. The law itself is
+an induction on `n`. Zero steps leave the fleet where `h` says it fits, and
+each further step is `step_alive_ok` applied to the result of the earlier
+steps, whose proof is the recursive call.
+
+**Checking that the proof can fail:** in a scratch copy where `turn_in`
+moves to `nx` even when it doesn't fit, Bend reported:
+
+```
+- expected : {Cmp.is_le(U32.cmp(U32.add(nx, U32.mul(lo, 20)), ...
+- observed : {Cmp.is_le(U32.cmp(U32.add(x, U32.mul(lo, 20)), ...
+```
+
+### Checking by evaluation
+
+Evaluating step 6's game gave these fleets (`x`, `y`, marching right):
+
+| Game                       | After frames | Fleet                    |
+|----------------------------|-------------:|--------------------------|
+| all 40 invaders            | 104          | `{104, 24, True{}}`      |
+| all 40 invaders            | 105          | `{104, 32, False{}}`, turned |
+| only columns 1 and 6 alive | 124          | `{124, 24, True{}}`      |
+| only columns 1 and 6 alive | 125          | `{124, 32, False{}}`, turned |
+| only columns 1 and 6 alive | 270          | `{4294967276, 40, True{}}`, x = -20, turned again |
+
+A full fleet turns at 104 as before. With the outer columns gone it goes
+20 pixels further on each side.
+
+### What broke
+
+1. `f (consumed more than once)` and then `p (consumed more than once)`
+   in the main proof. The law needed `for +f` and the pattern needed
+   `1n+(+p)`, because both go to `march_alive` and to the recursive call.
+2. `fleet_on_screen` and `fast_fleet_on_screen` still check, but the game
+   no longer calls `F.step` after step 5, or `F.march` at all. Those two
+   laws now cover only step 5's fleet and unused code. You may want to
+   remove them, since `alive_fleet_on_screen` covers the game.
+
 ## Where the project stands
 
-Eight laws, all proven by `bend PROOF.bend`:
+Nine laws, all proven by `bend PROOF.bend`:
 
 | Law                    | Says                                              |
 |------------------------|---------------------------------------------------|
@@ -2162,10 +2314,11 @@ Eight laws, all proven by `bend PROOF.bend`:
 | `lives_never_go_up`    | after any frame, the old lives are the new ones plus d ≥ 0 |
 | `shields_only_shrink`  | hits only remove shield blocks, never add any     |
 | `fast_fleet_on_screen` | however many steps the fleet takes in a frame, it stays on screen |
+| `alive_fleet_on_screen` | if the alive invaders are on screen, they stay on screen |
 
 Known simplifications, possible next steps:
 
-- The fleet keeps its full width at the edges even after outer columns
-  are shot.
+- `alive_fleet_on_screen` assumes the fleet starts on screen; that the
+  game keeps this true when columns die is argued, not proven.
 - `bend PROOF.bend --verdict` (the Lean-checked second opinion) needs a
   Lean toolchain: `elan default stable`.

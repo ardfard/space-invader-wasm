@@ -33,7 +33,7 @@ def extra(+left: U32) -> Nat:
 def hurry(ph: G.Phase, +iv: +List<H.Inv>, f: F.Fleet) -> F.Fleet:
   match ph:
     case G.Playing{}:
-      F.march(extra(count(iv)), f)
+      H.march(extra(count(iv)), iv, f)
     case G.Won{}:
       f
     case G.Lost{}:

@@ -79,3 +79,42 @@ def march(n: Nat, f: Fleet) -> Fleet:
       f
     case 1n+p:
       step(march(p, f))
+
+# Once outer columns are shot away, the block that is left is narrower.
+# lo and hi are the leftmost and rightmost columns still alive.
+
+# The screen x of the alive block's left edge.
+def left_edge(x: U32, lo: U32) -> U32:
+  (x + (lo * gap_x() : U32) : U32)
+
+# How far right that edge may go: 256 minus the alive block's width,
+# which is (hi - lo) * 20 + 12.
+def room(lo: U32, hi: U32) -> U32:
+  (244 - ((hi - lo : U32) * gap_x() : U32) : U32)
+
+# Is the alive block on screen? As before, a left edge past 0 wraps to a
+# huge U32, so one test covers both sides.
+def fits(x: U32, +lo: U32, +hi: U32) -> Bool:
+  U32.is_le(left_edge(x, lo), room(lo, hi))
+
+# Go to nx if it fits; otherwise stay at x, drop and turn around.
+def turn_in(ok: Bool, nx: U32, x: U32, y: U32, +right: Bool) -> Fleet:
+  match ok:
+    case True{}:
+      Fleet{nx, y, right}
+    case False{}:
+      Fleet{x, (y + drop() : U32), Bool.not(right)}
+
+# One step, turning at the edges of the alive block.
+def step_alive(+lo: U32, +hi: U32, f: Fleet) -> Fleet:
+  match f:
+    case Fleet{+x, y, +right}:
+      turn_in(fits(next_x(right, x), lo, hi), next_x(right, x), x, y, right)
+
+# n such steps in a row.
+def march_alive(n: Nat, +lo: U32, +hi: U32, f: Fleet) -> Fleet:
+  match n:
+    case 0n:
+      f
+    case 1n+p:
+      step_alive(lo, hi, march_alive(p, lo, hi, f))

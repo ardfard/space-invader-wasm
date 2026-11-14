@@ -112,3 +112,29 @@ def resolve(bs: +List<B.Bullet>, s: Strike, +fx: U32, +fy: U32) -> Hits:
 
 def hits(+bs: +List<B.Bullet>, invs: +List<Inv>, +fx: U32, +fy: U32) -> Hits:
   resolve(bs, first_strike(bs, invs, fx, fy), fx, fy)
+
+def choose(first: Bool, a: U32, b: U32) -> U32:
+  match first:
+    case True{}:
+      a
+    case False{}:
+      b
+
+# The leftmost and rightmost alive columns; best is the answer so far.
+def lo_col(iv: +List<Inv>, +best: U32) -> U32:
+  match iv:
+    case Nil{}:
+      best
+    case Con{Inv{+c, r}, rest}:
+      lo_col(rest, choose((c < best : U32), c, best))
+
+def hi_col(iv: +List<Inv>, +best: U32) -> U32:
+  match iv:
+    case Nil{}:
+      best
+    case Con{Inv{+c, r}, rest}:
+      hi_col(rest, choose((best < c : U32), c, best))
+
+# n fleet steps, turning at the edges of the columns still alive.
+def march(n: Nat, +iv: +List<Inv>, f: F.Fleet) -> F.Fleet:
+  F.march_alive(n, lo_col(iv, 7), hi_col(iv, 0), f)

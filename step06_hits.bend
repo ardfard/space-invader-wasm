@@ -75,12 +75,13 @@ def advance(p: S.Game, f: F.Fleet, iv: +List<H.Inv>, score: Nat) -> Game:
           settle(H.hits(bs, iv, fx, fy), s, fx, fy, right, score)
 
 # One frame: everything moves, then bullets hit. Frozen once won or lost.
+# The fleet turns at the edges of its alive columns (added in step 11).
 def step(g: Game) -> Game:
   match g:
-    case Game{phase, p, f, iv, score}:
+    case Game{phase, p, f, +iv, score}:
       match phase:
         case Playing{}:
-          advance(S.step(p), F.step(f), iv, score)
+          advance(S.step(p), H.march(1n, iv, f), iv, score)
         case Won{}:
           Game{Won{}, p, f, iv, score}
         case Lost{}:

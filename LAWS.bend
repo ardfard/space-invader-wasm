@@ -64,3 +64,14 @@ law fast_fleet_on_screen:
   for n: Nat
   for f: F.Fleet
   {U32.is_le(F.Fleet.x(F.march(1n+n, f)), F.max_x()) == True{} : Bool}
+
+# Once outer columns are shot, the fleet turns at the edges of the columns
+# still alive. If those alive invaders are on screen before the fleet
+# moves, they are still on screen after any number of steps.
+law alive_fleet_on_screen:
+  for n: Nat
+  for +lo: U32
+  for +hi: U32
+  for +f: F.Fleet
+  for h: {F.fits(F.Fleet.x(f), lo, hi) == True{} : Bool}
+  {F.fits(F.Fleet.x(F.march_alive(n, lo, hi, f)), lo, hi) == True{} : Bool}

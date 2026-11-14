@@ -96,10 +96,10 @@ def advance_ok(p: S.Game, f: F.Fleet, iv: +List<H.Inv>, -score: Nat) ->
 # game is frozen, so d is 0n, and Nat.add(0n, score) computes to score.
 def Laws.score_never_drops(g):
   match g:
-    case G.Game{phase, p, f, iv, score}:
+    case G.Game{phase, p, f, +iv, score}:
       match phase:
         case G.Playing{}:
-          advance_ok(S.step(p), F.step(f), iv, score)
+          advance_ok(S.step(p), H.march(1n, iv, f), iv, score)
         case G.Won{}:
           (0n, {==})
         case G.Lost{}:
@@ -184,3 +184,36 @@ def Laws.shields_only_shrink(blocks, ps):
 # anywhere, which is exactly what fleet_on_screen covers.
 def Laws.fast_fleet_on_screen(n, f):
   Laws.fleet_on_screen(F.march(n, f))
+
+# turn_in either moves to nx, when e says nx fits, or stays at x, which h
+# says fits. No arithmetic is needed in either case.
+def turn_in_ok(
+  -lo: U32, -hi: U32, -nx: U32, -x: U32, -y: U32,
+  b: Bool, e: {F.fits(nx, lo, hi) == b : Bool},
+  h: {F.fits(x, lo, hi) == True{} : Bool}, -right: Bool
+) -> {F.fits(F.Fleet.x(F.turn_in(b, nx, x, y, right)), lo, hi) == True{} : Bool}:
+  match b:
+    case True{}:
+      e
+    case False{}:
+      h
+
+# One step keeps an on-screen fleet on screen.
+def step_alive_ok(
+  +lo: U32, +hi: U32, f: F.Fleet,
+  h: {F.fits(F.Fleet.x(f), lo, hi) == True{} : Bool}
+) -> {F.fits(F.Fleet.x(F.step_alive(lo, hi, f)), lo, hi) == True{} : Bool}:
+  match f:
+    case F.Fleet{+x, y, +right}:
+      turn_in_ok(lo, hi, F.next_x(right, x), x, y,
+        F.fits(F.next_x(right, x), lo, hi), {==}, h, right)
+
+# Induction on n: zero steps leave the fleet where h says it fits, and
+# each further step is step_alive_ok on the result of the steps before.
+def Laws.alive_fleet_on_screen(n, lo, hi, f, h):
+  match n:
+    case 0n:
+      h
+    case 1n+(+p):
+      step_alive_ok(lo, hi, F.march_alive(p, lo, hi, f),
+        Laws.alive_fleet_on_screen(p, lo, hi, f, h))
